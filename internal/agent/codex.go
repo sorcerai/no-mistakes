@@ -58,7 +58,7 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	})
 }
 
-func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (result *Result, retErr error) {
 	schemaPath := ""
 	validationSchema := opts.JSONSchema
 	if len(opts.JSONSchema) > 0 {
@@ -118,6 +118,13 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	var codexErr string
 	var threadID string
 	metrics := newCodexMetricsAccumulator()
+	defer func() {
+		// Tool starts, partial answers and undecodable activity remain sticky:
+		// a fresh invocation cannot know what work the failed one performed.
+		if retErr != nil && metrics.replayUnsafe {
+			retErr = fmt.Errorf("%w: %w", errUnsafeReplay, retErr)
+		}
+	}()
 	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
@@ -340,7 +347,21 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 
 		var event codexEvent
 		if err := json.Unmarshal(line, &event); err != nil {
+			if metrics != nil {
+				metrics.replayUnsafe = true
+			}
 			continue // skip malformed lines
+		}
+		if metrics != nil {
+			if event.Type == "" {
+				metrics.replayUnsafe = true
+			} else if strings.HasPrefix(event.Type, "item.") {
+				// Plans, reasoning and error notices do not execute work.
+				// Unknown item kinds fail closed, including future tools.
+				nonWork := event.Item != nil && (event.Item.Type == "reasoning" ||
+					event.Item.Type == "todo_list" || event.Item.Type == "error")
+				metrics.replayUnsafe = metrics.replayUnsafe || !nonWork
+			}
 		}
 
 		switch event.Type {

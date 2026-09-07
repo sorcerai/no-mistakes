@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* **agent:** prevent Codex retries and backend fallback after tool activity, assistant output, or indeterminate event records; preserve pre-work quota fallback and honor cancellation.
+
 ## [1.64.0](https://github.com/kunchenguid/no-mistakes/compare/v1.63.0...v1.64.0) (2026-09-03)
 
 

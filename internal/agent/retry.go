@@ -13,6 +13,10 @@ import (
 // returning a short human-readable label for telemetry.
 type retryClassifier func(error) (label string, retry bool)
 
+// errUnsafeReplay marks an invocation that has already performed observable
+// work. Neither a fresh retry nor a different backend may replay its prompt.
+var errUnsafeReplay = errors.New("agent already performed work; automatic replay refused")
+
 // transientBackoff is the package-level sleep function used between retries.
 // It is overridden in tests to keep them fast while preserving cancellation
 // semantics.
@@ -178,7 +182,7 @@ func classifyTransient(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errUnsafeReplay) {
 		return "", false
 	}
 	msg := strings.ToLower(err.Error())

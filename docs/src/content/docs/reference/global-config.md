@@ -132,6 +132,7 @@ After resolving `auto`, entries that resolve to the same ACP target are deduplic
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
+Cancellation and deadlines never trigger fallback. For Codex, an observed tool start, completed tool, or assistant answer also prevents automatic retry and fallback: replaying the prompt in a fresh invocation could repeat work already performed. Malformed records and unknown activity types fail closed; planning, reasoning, and error notices alone do not block replay. A quota failure before work can still fall through to the next configured agent.
 
 ### acpx_path
 
