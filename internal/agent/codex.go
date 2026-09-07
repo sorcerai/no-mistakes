@@ -122,7 +122,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (result *Result,
 		// Tool starts, partial answers and undecodable activity remain sticky:
 		// a fresh invocation cannot know what work the failed one performed.
 		if retErr != nil && metrics.replayUnsafe {
-			retErr = fmt.Errorf("%w: %w", errUnsafeReplay, retErr)
+			retErr = fmt.Errorf("%w: %w", ErrReplayUnsafe, retErr)
 		}
 	}()
 	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
