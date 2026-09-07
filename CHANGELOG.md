@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.70.0](https://github.com/kunchenguid/no-mistakes/compare/v1.69.0...v1.70.0) (2026-09-07)
+
+
+### Features
+
+* **pipeline:** prepare dependencies once per run ([#937](https://github.com/kunchenguid/no-mistakes/issues/937)) ([4603016](https://github.com/kunchenguid/no-mistakes/commit/4603016d04f78f360235704d73b01e2a6eaf6cac))
+
+
+### Bug Fixes
+
+* **cli:** show elapsed time for the active review round ([#1001](https://github.com/kunchenguid/no-mistakes/issues/1001)) ([2b98e45](https://github.com/kunchenguid/no-mistakes/commit/2b98e458251207404b413ec65cbf205a1cb7ff57))
+
 ## [1.69.0](https://github.com/kunchenguid/no-mistakes/compare/v1.68.0...v1.69.0) (2026-09-07)
 
 
