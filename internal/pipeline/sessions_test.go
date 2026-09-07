@@ -206,6 +206,28 @@ func TestRunSessions_ResumeFailureFallsBackToFreshSameRoleSession(t *testing.T) 
 	}
 }
 
+// TestRunSessions_ReplayUnsafeResumeFailureDoesNotFallback proves an agent
+// that observed work during a resumed turn is never replayed in a fresh
+// session by the outer durable-session fallback.
+func TestRunSessions_ReplayUnsafeResumeFailureDoesNotFallback(t *testing.T) {
+	d, run := sessionTestDB(t)
+	fake := newFakeSessionAgent()
+	rs := NewRunSessions(d, run.ID, fake, true)
+
+	if _, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "initial fix"}, nil); err != nil {
+		t.Fatalf("initial: %v", err)
+	}
+	fake.failResumes["sess-1"] = fmt.Errorf("%w: provider stopped after tool activity", agent.ErrReplayUnsafe)
+
+	_, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "resume fix"}, nil)
+	if err == nil || !agent.IsReplayUnsafeError(err) {
+		t.Fatalf("replay-unsafe resume failure must propagate, got %v", err)
+	}
+	if len(fake.calls) != 2 {
+		t.Fatalf("replay-unsafe resume must not start a fresh session, got %d calls", len(fake.calls))
+	}
+}
+
 // TestRunSessions_FreshSessionFailurePropagates proves a failure that was not
 // a resume (nothing to fall back from) surfaces to the caller unchanged.
 func TestRunSessions_FreshSessionFailurePropagates(t *testing.T) {
