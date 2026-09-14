@@ -68,10 +68,10 @@ func (s *LocalService) Run(ctx context.Context, req RunRequest) (*RunState, erro
 		if strings.TrimSpace(req.Intent) == "" {
 			return nil, ErrIntentRequired
 		}
-		if err := preflight(ctx, e, branch); err != nil {
+		if err := preflight(driveCtx, e, branch); err != nil {
 			return nil, err
 		}
-		runID, err = trigger(ctx, e, branch, headSHA, req)
+		runID, err = trigger(driveCtx, e, branch, headSHA, req)
 		if err != nil {
 			return nil, err
 		}
@@ -175,7 +175,7 @@ func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest
 		}
 	}
 	run, waitErr := waitForTriggeredRun(ctx, e.client, e.repo.ID, branch, headSHA, priorRunIDs)
-	if waitErr != nil && !errors.Is(waitErr, context.DeadlineExceeded) {
+	if waitErr != nil {
 		return "", fmt.Errorf("wait for triggered run: %w", waitErr)
 	}
 	if run != nil {

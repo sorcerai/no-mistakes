@@ -3,6 +3,7 @@ package axiapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,5 +52,16 @@ func TestWaitForTriggeredRunPropagatesIPCError(t *testing.T) {
 	}
 	if got := err.Error(); got == "" || !strings.Contains(got, "daemon unavailable") {
 		t.Fatalf("error = %q, want daemon error", got)
+	}
+}
+
+func TestWaitForTriggeredRunReturnsCallerDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond)
+
+	_, err := waitForTriggeredRun(ctx, nil, "repo", "branch", "head", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want caller deadline", err)
 	}
 }
