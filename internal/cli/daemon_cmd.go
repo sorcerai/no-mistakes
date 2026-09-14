@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/axiapi"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -207,29 +208,21 @@ func parseSkipSteps(value string) ([]types.StepName, error) {
 	return dedupeSteps(steps), nil
 }
 
-// intentPushOptionPrefix carries an agent-supplied intent through a git push.
-// The value is base64-encoded so multi-line or special-character intents
-// survive the push-option transport (which is line-oriented).
-const intentPushOptionPrefix = "no-mistakes.intent="
-
+// The push-option vocabulary these parsers read is owned by internal/axiapi,
+// which formats it for both AXI launchers. Only the receive-hook side lives
+// here.
 const (
-	launchNoncePushOptionPrefix          = "no-mistakes.launch-nonce="
-	validationGenerationPushOptionPrefix = "no-mistakes.validation-generation="
+	intentPushOptionPrefix               = axiapi.IntentPushOptionPrefix
+	launchNoncePushOptionPrefix          = axiapi.LaunchNoncePushOptionPrefix
+	validationGenerationPushOptionPrefix = axiapi.ValidationGenerationPushOptionPrefix
 )
 
 func formatLaunchNoncePushOption(nonce string) string {
-	return formatOpaquePushOption(launchNoncePushOptionPrefix, nonce)
+	return axiapi.FormatLaunchNoncePushOption(nonce)
 }
 
 func formatValidationGenerationPushOption(generation string) string {
-	return formatOpaquePushOption(validationGenerationPushOptionPrefix, generation)
-}
-
-func formatOpaquePushOption(prefix, value string) string {
-	if value == "" {
-		return ""
-	}
-	return prefix + base64.StdEncoding.EncodeToString([]byte(value))
+	return axiapi.FormatValidationGenerationPushOption(generation)
 }
 
 func parseLaunchNoncePushOptions(options []string) (string, error) {
@@ -263,15 +256,10 @@ func parseOpaquePushOptions(options []string, prefix, label string) (string, err
 }
 
 // prBaseBranchPushOptionPrefix carries a per-run PR base branch through a git push.
-const prBaseBranchPushOptionPrefix = "no-mistakes.pr-base-branch="
+const prBaseBranchPushOptionPrefix = axiapi.PRBaseBranchPushOptionPrefix
 
-// formatIntentPushOption encodes intent as a single push option, or returns ""
-// when there is no intent to carry.
 func formatIntentPushOption(intent string) string {
-	if strings.TrimSpace(intent) == "" {
-		return ""
-	}
-	return intentPushOptionPrefix + base64.StdEncoding.EncodeToString([]byte(intent))
+	return axiapi.FormatIntentPushOption(intent)
 }
 
 // parseIntentPushOptions extracts and decodes the intent push option, if any.
@@ -292,14 +280,8 @@ func parseIntentPushOptions(options []string) (string, error) {
 	return intent, nil
 }
 
-// formatPRBaseBranchPushOption encodes a per-run PR base branch as a push
-// option, or returns "" when unset.
 func formatPRBaseBranchPushOption(branch string) string {
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return ""
-	}
-	return prBaseBranchPushOptionPrefix + branch
+	return axiapi.FormatPRBaseBranchPushOption(branch)
 }
 
 // parsePRBaseBranchPushOptions extracts the per-run PR base branch push option,
@@ -320,14 +302,7 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {
-	if len(steps) == 0 {
-		return nil
-	}
-	parts := make([]string, 0, len(steps))
-	for _, step := range dedupeSteps(steps) {
-		parts = append(parts, string(step))
-	}
-	return []string{"no-mistakes.skip=" + strings.Join(parts, ",")}
+	return axiapi.FormatSkipPushOptions(steps)
 }
 
 func validStep(step types.StepName) bool {
