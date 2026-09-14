@@ -174,7 +174,11 @@ func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest
 			return "", &BranchOwnershipError{State: *state}
 		}
 	}
-	if run, _ := waitForTriggeredRun(ctx, e.client, e.repo.ID, branch, headSHA, priorRunIDs); run != nil {
+	run, waitErr := waitForTriggeredRun(ctx, e.client, e.repo.ID, branch, headSHA, priorRunIDs)
+	if waitErr != nil && !errors.Is(waitErr, context.DeadlineExceeded) {
+		return "", fmt.Errorf("wait for triggered run: %w", waitErr)
+	}
+	if run != nil {
 		return run.ID, nil
 	}
 	if pushErr != nil {

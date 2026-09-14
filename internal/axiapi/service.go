@@ -452,7 +452,7 @@ func stateFromDB(run *db.Run, steps []*db.StepResult) *RunState {
 			state.Gate = gateFrom(string(s.StepName), string(s.Status), findingsJSON)
 		}
 	}
-	finish(state, false, false)
+	finish(state, run.CIReadyAt != nil, run.CIReadyNoCI)
 	return state
 }
 

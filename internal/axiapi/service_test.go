@@ -231,6 +231,33 @@ func TestStatusTerminalOutcomeUsesSharedVocabulary(t *testing.T) {
 	}
 }
 
+func TestStatusUsesPersistedCIReadiness(t *testing.T) {
+	f := newFixture(t)
+	head := gitRun(t, f.repoPath, "rev-parse", "HEAD")
+	run, err := f.db.InsertRun(f.repo.ID, "feature/x", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := f.db.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.SetRunCIReady(run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := f.svc.Status(context.Background(), f.repoPath, "")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !state.CIReady {
+		t.Fatal("Status dropped persisted CI readiness")
+	}
+}
+
 func TestStatusRejectsUninitializedRepository(t *testing.T) {
 	f := newFixture(t)
 	other := filepath.Join(t.TempDir(), "other")
