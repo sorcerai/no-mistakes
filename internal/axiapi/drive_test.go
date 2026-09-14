@@ -65,3 +65,48 @@ func TestWaitForTriggeredRunReturnsCallerDeadline(t *testing.T) {
 		t.Fatalf("error = %v, want caller deadline", err)
 	}
 }
+
+func TestWaitForTriggeredRunBoundsIPCReplyByCallerDeadline(t *testing.T) {
+	dir, err := os.MkdirTemp("/private/tmp", "ax- slow-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "ipc.sock")
+	srv := ipc.NewServer()
+	srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
+		time.Sleep(time.Second)
+		return &ipc.GetActiveRunResult{}, nil
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(sock) }()
+	t.Cleanup(func() {
+		srv.Close()
+		<-errCh
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		client, err := ipc.Dial(sock)
+		if err == nil {
+			client.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	client, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err = waitForTriggeredRun(ctx, client, "repo", "branch", "head", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want caller deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("wait took %s, exceeded caller deadline", elapsed)
+	}
+}

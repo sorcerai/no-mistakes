@@ -156,7 +156,7 @@ func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest
 	if opt := FormatIntentPushOption(req.Intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
-	priorRunIDs, err := runIDsForHead(e.client, e.repo.ID, branch, headSHA)
+	priorRunIDs, err := runIDsForHead(ctx, e.client, e.repo.ID, branch, headSHA)
 	if err != nil {
 		// Without a baseline a matching terminal run may predate this push, so
 		// do not attach to one; the active-run lookup below still applies.
@@ -193,14 +193,14 @@ func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest
 		RepoID: e.repo.ID, Branch: branch, SkipSteps: req.Skip,
 		Intent: req.Intent, CallerHeadSHA: callerHead,
 	}
-	if err := e.client.Call(ipc.MethodRerun, params, &rr); err != nil {
+	if err := callIPC(ctx, e.client, ipc.MethodRerun, params, &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %w", branch, err)
 	}
 	return rr.RunID, nil
 }
 
-func runIDsForHead(client *ipc.Client, repoID, branch, headSHA string) (map[string]struct{}, error) {
-	runs, err := runsForHead(client, repoID, branch, headSHA)
+func runIDsForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string) (map[string]struct{}, error) {
+	runs, err := runsForHead(ctx, client, repoID, branch, headSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -211,9 +211,9 @@ func runIDsForHead(client *ipc.Client, repoID, branch, headSHA string) (map[stri
 	return ids, nil
 }
 
-func runsForHead(client *ipc.Client, repoID, branch, headSHA string) ([]ipc.RunInfo, error) {
+func runsForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string) ([]ipc.RunInfo, error) {
 	var result ipc.GetRunsResult
-	if err := client.Call(ipc.MethodGetRunsForHead, &ipc.GetRunsForHeadParams{RepoID: repoID, Branch: branch, HeadSHA: headSHA}, &result); err != nil {
+	if err := callIPC(ctx, client, ipc.MethodGetRunsForHead, &ipc.GetRunsForHeadParams{RepoID: repoID, Branch: branch, HeadSHA: headSHA}, &result); err != nil {
 		return nil, err
 	}
 	return result.Runs, nil
@@ -231,14 +231,14 @@ func waitForTriggeredRun(ctx context.Context, client *ipc.Client, repoID, branch
 			return nil, err
 		}
 		var result ipc.GetActiveRunResult
-		if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}, &result); err != nil {
+		if err := callIPC(ctx, client, ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}, &result); err != nil {
 			return nil, err
 		}
 		if run := activeRunForHead(result.Run, headSHA); run != nil {
 			return run, nil
 		}
 		if priorRunIDs != nil {
-			runs, err := runsForHead(client, repoID, branch, headSHA)
+			runs, err := runsForHead(ctx, client, repoID, branch, headSHA)
 			if err != nil {
 				return nil, err
 			}
@@ -258,6 +258,26 @@ func waitForTriggeredRun(ctx context.Context, client *ipc.Client, repoID, branch
 		case <-poll.C:
 		}
 	}
+}
+
+func ipcCallTimeout(ctx context.Context) time.Duration {
+	timeout := triggerWaitTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < timeout {
+			return remaining
+		}
+	}
+	return timeout
+}
+
+func callIPC(ctx context.Context, client *ipc.Client, method string, params, result interface{}) error {
+	err := client.CallWithContext(ctx, method, params, result, ipcCallTimeout(ctx))
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+	}
+	return err
 }
 
 // cleanCallerHead captures clean-head evidence at the request boundary. A dirty
