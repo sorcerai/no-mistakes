@@ -183,6 +183,8 @@ type GlobalConfig struct {
 	// RepoConfig means no pushed branch can enable, disable, or resize it.
 	Eval      Eval
 	Providers ProvidersRaw
+	// MCP is global-only; see MCPRaw for why.
+	MCP MCP
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -215,6 +217,25 @@ type globalConfigRaw struct {
 	Eval                    EvalRaw                    `yaml:"eval"`
 	ForgeProfiles           ForgeProfiles              `yaml:"forge_profiles"`
 	Providers               ProvidersRaw               `yaml:"providers"`
+	MCP                     MCPRaw                     `yaml:"mcp"`
+}
+
+// MCPRaw is the MCP gateway block of the global config.
+//
+// It is global-only, and deliberately has no repo-config counterpart: the
+// allowlist decides which repositories this machine's no-mistakes will mutate
+// on an external agent's behalf, so it is the operator's setting. A pushed
+// branch that could widen it would be widening its own authority - the same
+// trust boundary the code-executing repo-config fields sit behind.
+type MCPRaw struct {
+	AllowedRepoRoots []string `yaml:"allowed_repo_roots"`
+}
+
+// MCP is the resolved MCP gateway configuration.
+type MCP struct {
+	// AllowedRepoRoots are absolute directories the gateway may serve
+	// repositories from. Empty means the gateway serves none.
+	AllowedRepoRoots []string
 }
 
 // ForgeProfile selects one isolated provider CLI configuration directory.
@@ -1695,6 +1716,28 @@ func validateAgentArgsOverride(override map[string][]string) error {
 // other's runs, and a duplicate key would pick an arbitrary winner. A root
 // equal to its own checkout is rejected for the same reason - it would place
 // run worktrees inside the repository they are validating.
+// validatedMCPRepoRoots requires every allowed root to be absolute. A relative
+// root has no stable meaning for a long-running server with no working
+// directory of its own, and silently resolving one would be an allowlist the
+// operator never wrote.
+func validatedMCPRepoRoots(roots []string) ([]string, error) {
+	if len(roots) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		trimmed := strings.TrimSpace(root)
+		if trimmed == "" {
+			return nil, fmt.Errorf("invalid mcp.allowed_repo_roots: empty path")
+		}
+		if !filepath.IsAbs(trimmed) {
+			return nil, fmt.Errorf("invalid mcp.allowed_repo_roots: %q is not an absolute path", root)
+		}
+		out = append(out, trimmed)
+	}
+	return out, nil
+}
+
 func ValidateWorktreeRoots(roots map[string]string) error {
 	owners := make(map[string]string, len(roots))
 	checkouts := make(map[string]string, len(roots))
@@ -1981,6 +2024,11 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.WorktreeRoots = raw.WorktreeRoots
 	}
+	roots, err := validatedMCPRepoRoots(raw.MCP.AllowedRepoRoots)
+	if err != nil {
+		return nil, err
+	}
+	cfg.MCP.AllowedRepoRoots = roots
 	timeoutValue := raw.CITimeout
 	if timeoutValue == "" {
 		timeoutValue = raw.BabysitTimeout
