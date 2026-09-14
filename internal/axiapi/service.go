@@ -239,6 +239,8 @@ type env struct {
 	closeOnce bool
 }
 
+var ensureDaemon = daemon.EnsureDaemon
+
 func (e *env) close() {
 	if e.closeOnce {
 		return
@@ -264,6 +266,10 @@ func (s *LocalService) resolvePaths() (*paths.Paths, error) {
 // argument: the MCP gateway is long-lived and serves concurrent calls, so
 // resolving through the process working directory would race.
 func (s *LocalService) openEnv(repoPath string, ensureDaemon bool) (*env, error) {
+	return s.openEnvContext(context.Background(), repoPath, ensureDaemon)
+}
+
+func (s *LocalService) openEnvContext(ctx context.Context, repoPath string, ensureDaemon bool) (*env, error) {
 	p, err := s.resolvePaths()
 	if err != nil {
 		return nil, fmt.Errorf("resolve paths: %w", err)
@@ -294,7 +300,7 @@ func (s *LocalService) openEnv(repoPath string, ensureDaemon bool) (*env, error)
 	}
 	e.cfg, e.cfgErr = cfg, cfgErr
 	if ensureDaemon {
-		if err := daemon.EnsureDaemon(p); err != nil {
+		if err := ensureDaemonContext(ctx, p); err != nil {
 			e.close()
 			return nil, fmt.Errorf("start daemon: %w", err)
 		}
@@ -306,6 +312,20 @@ func (s *LocalService) openEnv(repoPath string, ensureDaemon bool) (*env, error)
 		e.client = client
 	}
 	return e, nil
+}
+
+func ensureDaemonContext(ctx context.Context, p *paths.Paths) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- ensureDaemon(p) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // resolveRepo finds the registered repository containing dir, following the

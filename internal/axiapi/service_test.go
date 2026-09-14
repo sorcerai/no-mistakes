@@ -8,11 +8,32 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestEnsureDaemonContextHonorsCallerDeadline(t *testing.T) {
+	original := ensureDaemon
+	defer func() { ensureDaemon = original }()
+	ensureDaemon = func(*paths.Paths) error {
+		time.Sleep(time.Second)
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := ensureDaemonContext(ctx, &paths.Paths{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want caller deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("setup took %s, exceeded caller deadline", elapsed)
+	}
+}
 
 func gitRun(t *testing.T, dir string, args ...string) string {
 	t.Helper()

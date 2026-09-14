@@ -35,26 +35,25 @@ func (s *LocalService) Run(ctx context.Context, req RunRequest) (*RunState, erro
 	if wait <= 0 {
 		wait = DefaultWait
 	}
-	e, err := s.openEnv(req.RepoPath, true)
+	driveCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	e, err := s.openEnvContext(driveCtx, req.RepoPath, true)
 	if err != nil {
 		return nil, err
 	}
 	defer e.close()
 
-	branch, err := currentBranch(ctx, e.repoPath)
+	branch, err := currentBranch(driveCtx, e.repoPath)
 	if err != nil {
 		return nil, err
 	}
 	if branch == "" {
 		return nil, ErrDetachedHEAD
 	}
-	headSHA, err := git.Run(ctx, e.repoPath, "rev-parse", "HEAD")
+	headSHA, err := git.Run(driveCtx, e.repoPath, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("get current HEAD: %w", err)
 	}
-	driveCtx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-
 	runID, err := s.attach(driveCtx, e, branch, headSHA)
 	if err != nil {
 		return nil, err
@@ -311,19 +310,18 @@ func (s *LocalService) Respond(ctx context.Context, req RespondRequest) (*RunSta
 	if wait <= 0 {
 		wait = DefaultWait
 	}
-	e, err := s.openEnv(req.RepoPath, true)
+	driveCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	e, err := s.openEnvContext(driveCtx, req.RepoPath, true)
 	if err != nil {
 		return nil, err
 	}
 	defer e.close()
 
-	driveCtx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-
 	runID := req.RunID
 	explicitRunID := runID != ""
 	if runID == "" {
-		branch, err := currentBranch(ctx, e.repoPath)
+		branch, err := currentBranch(driveCtx, e.repoPath)
 		if err != nil {
 			return nil, err
 		}
