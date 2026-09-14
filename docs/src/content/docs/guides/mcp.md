@@ -124,8 +124,16 @@ flowchart TD
   Do not fill that field in on their behalf; it is the one thing standing
   between a referred question and an unattended answer.
 
+  The refusal is re-checked against the live gate the response would land on,
+  not only against the gate you last read, so a run that advances into an
+  ask-user gate while you are composing a response is still refused.
+
 A protected-path refusal behaves the same way: the pipeline declined to act, so
 the gateway will not act for it.
+
+`nomistakes_run` also refuses the repository's own default branch
+(`default_branch_refused`). Changes reach it through the pull request
+no-mistakes opens, never a direct push.
 
 A caller running inside an active no-mistakes validation step is refused any
 mutating tool with `nested_gate_context`. That caller owns one phase, not the

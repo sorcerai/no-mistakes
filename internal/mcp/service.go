@@ -23,6 +23,7 @@ const (
 	CodeRepoNotInitialized   = "repo_not_initialized"
 	CodeNotAGitRepo          = "not_a_git_repository"
 	CodeDetachedHead         = "detached_head"
+	CodeDefaultBranch        = "default_branch_refused"
 	CodeDirtyWorktree        = "dirty_worktree"
 	CodeBranchOwnedByGate    = "branch_owned_by_pipeline"
 	CodeNoRunForBranch       = "no_run_for_branch"
@@ -191,7 +192,12 @@ func (s *Service) Respond(ctx context.Context, in RespondInput) *Receipt {
 			Remediation: "Call nomistakes_status to see what the run is doing.",
 		})
 	}
-	if requiresUserDecision(state.Gate) && strings.TrimSpace(in.UserDecision) == "" {
+	// This pre-check exists to shape the refusal receipt with the findings a
+	// human has to see. It is not the enforcement point: internal/axiapi
+	// re-checks against the live snapshot the action lands on, so a run that
+	// advances into an ask-user gate between this read and the response is
+	// still refused.
+	if axiapi.RequiresUserDecision(state.Gate) && strings.TrimSpace(in.UserDecision) == "" {
 		receipt := NewReceipt(OpRespond, repoPath, state)
 		receipt.OK = false
 		receipt.Error = &ErrorBody{
@@ -204,7 +210,9 @@ func (s *Service) Respond(ctx context.Context, in RespondInput) *Receipt {
 	}
 	next, err := s.AXI.Respond(ctx, axiapi.RespondRequest{
 		RepoPath: repoPath, RunID: state.RunID, Action: action,
-		FindingIDs: in.FindingIDs, Instructions: in.Instructions, Wait: boundedWait(in.WaitSeconds),
+		FindingIDs: in.FindingIDs, Instructions: in.Instructions,
+		UserDecisionGiven: strings.TrimSpace(in.UserDecision) != "",
+		Wait:              boundedWait(in.WaitSeconds),
 	})
 	if err != nil {
 		return s.fail(OpRespond, repoPath, err)
@@ -253,6 +261,22 @@ func (s *Service) Sync(ctx context.Context, in SyncInput) *Receipt {
 	if policyErr != nil {
 		return NewErrorReceipt(OpSync, in.RepoPath, policyErr)
 	}
+	if in.KeepLocal && !in.Recover {
+		return NewErrorReceipt(OpSync, repoPath, &PolicyError{
+			Code:        CodeInvalidAction,
+			Message:     "keep_local applies only to recover.",
+			Remediation: "Set recover: true to return custody keeping the current local head, or drop keep_local.",
+		})
+	}
+	if in.Apply && in.Recover {
+		// These are different mutations with different authorizations. Picking
+		// one silently would perform something the caller did not ask for.
+		return NewErrorReceipt(OpSync, repoPath, &PolicyError{
+			Code:        CodeInvalidAction,
+			Message:     "apply and recover cannot be requested together.",
+			Remediation: "Call nomistakes_sync with neither to read the state, then request the one no-mistakes' next action authorizes.",
+		})
+	}
 	mutating := in.Apply || in.Recover
 	if mutating {
 		if refusal := s.refuseNested(ctx, OpSync, repoPath); refusal != nil {
@@ -284,7 +308,7 @@ func (s *Service) Sync(ctx context.Context, in SyncInput) *Receipt {
 		return receipt
 	}
 	applied, err := s.AXI.Sync(ctx, axiapi.SyncRequest{
-		RepoPath: repoPath, Apply: in.Apply && !in.Recover, Recover: in.Recover, KeepLocal: in.KeepLocal,
+		RepoPath: repoPath, Apply: in.Apply, Recover: in.Recover, KeepLocal: in.KeepLocal,
 	})
 	if err != nil {
 		return s.fail(OpSync, repoPath, err)
@@ -379,6 +403,9 @@ func (s *Service) fail(operation, repoPath string, err error) *Receipt {
 	case errors.Is(err, axiapi.ErrDetachedHEAD):
 		body.Code = CodeDetachedHead
 		body.Remediation = "Check out a branch before validating: `git switch -c <branch>`."
+	case errors.Is(err, axiapi.ErrDefaultBranch):
+		body.Code = CodeDefaultBranch
+		body.Remediation = "Put the change on a feature branch; no-mistakes reaches the default branch through a pull request, never a direct push."
 	case errors.Is(err, axiapi.ErrIntentRequired):
 		body.Code = CodeIntentRequired
 		body.Remediation = "Pass what the user set out to accomplish."
@@ -388,6 +415,10 @@ func (s *Service) fail(operation, repoPath string, err error) *Receipt {
 	case errors.Is(err, axiapi.ErrNoGate):
 		body.Code = CodeNoGate
 		body.Remediation = "Call nomistakes_status to see what the run is doing."
+	case errors.Is(err, axiapi.ErrUserDecisionRequired):
+		body.Code = CodeUserDecisionRequired
+		body.Remediation = "Return the findings to the user, then call nomistakes_respond again with user_decision set to the decision they gave. " +
+			"Do not fill user_decision in on their behalf."
 	}
 	var dirty *axiapi.DirtyWorktreeError
 	if errors.As(err, &dirty) {

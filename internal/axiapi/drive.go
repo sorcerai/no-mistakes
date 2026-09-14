@@ -119,7 +119,7 @@ func activeRunForHead(run *ipc.RunInfo, headSHA string) *ipc.RunInfo {
 // working tree would otherwise validate the wrong thing.
 func preflight(ctx context.Context, e *env, branch string) error {
 	if e.repo.DefaultBranch != "" && branch == e.repo.DefaultBranch {
-		return fmt.Errorf("refusing to validate %q: it is the default branch", branch)
+		return fmt.Errorf("%w: %q is the default branch", ErrDefaultBranch, branch)
 	}
 	dirty, err := git.HasUncommittedChanges(ctx, e.repoPath)
 	if err != nil {
@@ -338,6 +338,14 @@ func (s *LocalService) Respond(ctx context.Context, req RespondRequest) (*RunSta
 	state := stateFromIPC(run)
 	if state.Gate == nil {
 		return nil, ErrNoGate
+	}
+	// The decision check and the step the action lands on must come from the
+	// same snapshot. Re-checking here - not only in the caller, which read the
+	// gate earlier and separately - is what stops a response aimed at a
+	// mechanical gate from answering an ask-user gate the run advanced into in
+	// between.
+	if RequiresUserDecision(state.Gate) && !req.UserDecisionGiven {
+		return nil, ErrUserDecisionRequired
 	}
 	gateStep, gateStatus := state.Gate.Step, state.Gate.Status
 

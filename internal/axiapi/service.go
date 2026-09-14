@@ -28,9 +28,17 @@ var (
 	ErrRepoNotInitialized = errors.New("repository is not initialized for no-mistakes")
 	ErrNotAGitRepository  = errors.New("not a git repository")
 	ErrDetachedHEAD       = errors.New("detached HEAD: check out a branch before validating")
-	ErrIntentRequired     = errors.New("intent is required to start a run")
-	ErrNoRunForBranch     = errors.New("no run exists for this branch")
-	ErrNoGate             = errors.New("the run is not awaiting a decision")
+	// ErrDefaultBranch refuses to validate - and therefore publish - the
+	// repository's own default branch. Changes reach it through a pull request.
+	ErrDefaultBranch  = errors.New("refusing to validate the default branch")
+	ErrIntentRequired = errors.New("intent is required to start a run")
+	ErrNoRunForBranch = errors.New("no run exists for this branch")
+	ErrNoGate         = errors.New("the run is not awaiting a decision")
+	// ErrUserDecisionRequired reports a gate the pipeline referred to a human.
+	// It is raised against the same live snapshot the action would land on, so
+	// a run that advanced into an ask-user gate between a caller's read and its
+	// response cannot be answered by the response it already had in flight.
+	ErrUserDecisionRequired = errors.New("the gate holds findings the pipeline referred to a human")
 )
 
 // DirtyWorktreeError reports uncommitted work. The gate validates committed
@@ -72,6 +80,25 @@ type Gate struct {
 	ProtectedPathRefusal bool
 }
 
+// RequiresUserDecision reports whether a gate must go back to a human. An
+// ask-user finding is the pipeline saying it will not decide; a protected-path
+// refusal is the pipeline saying it will not act. Neither is an agent's to
+// resolve, so both consumers of this boundary ask the same question here.
+func RequiresUserDecision(gate *Gate) bool {
+	if gate == nil {
+		return false
+	}
+	if gate.ProtectedPathRefusal {
+		return true
+	}
+	for _, f := range gate.Findings {
+		if f.ActionOrDefault() == types.ActionAskUser {
+			return true
+		}
+	}
+	return false
+}
+
 // RunState is the typed AXI run snapshot.
 type RunState struct {
 	RepoPath string
@@ -111,7 +138,11 @@ type RespondRequest struct {
 	Action       types.ApprovalAction
 	FindingIDs   []string
 	Instructions map[string]string
-	Wait         time.Duration
+	// UserDecisionGiven records that a human actually decided this gate. It is
+	// the only thing that lets a gate holding ask-user findings, or a
+	// protected-path refusal, be answered.
+	UserDecisionGiven bool
+	Wait              time.Duration
 }
 
 type LogsRequest struct {
@@ -149,6 +180,13 @@ type SyncState struct {
 	NextActionCode    string
 	NextActionCommand string
 	SyncError         string
+}
+
+// AgentCandidate is one supported pipeline agent and the binaries it can launch
+// through.
+type AgentCandidate struct {
+	Name     string
+	Binaries []string
 }
 
 type AgentCheck struct {
@@ -601,7 +639,7 @@ func (s *LocalService) Doctor(ctx context.Context, repoPath string) (*DoctorRepo
 	if _, cfgErr := config.LoadGlobal(p.ConfigFile()); cfgErr != nil {
 		report.ConfigError = cfgErr.Error()
 	}
-	report.Agents = agentChecks()
+	report.Agents = AgentAvailability()
 	e, err := s.openEnv(repoPath, false)
 	if err != nil {
 		if errors.Is(err, ErrRepoNotInitialized) || errors.Is(err, ErrNotAGitRepository) {
@@ -615,15 +653,47 @@ func (s *LocalService) Doctor(ctx context.Context, repoPath string) (*DoctorRepo
 	return report, nil
 }
 
-// agentChecks reports which pipeline agent binaries this machine can launch.
-// The daemon needs at least one; a repository with none fails before its first
+// AgentCandidates lists the pipeline agents this build supports and the
+// binaries each one can launch through. It is the single inventory `doctor`
+// reports from, whichever surface asks: a second hand-written list would name
+// agents by their binaries instead of their configured names and would silently
+// omit every ACP alias.
+func AgentCandidates() []AgentCandidate {
+	agents := []AgentCandidate{
+		{"claude", []string{"claude"}},
+		{"codex", []string{"codex"}},
+		{"grok", []string{"grok"}},
+		{"rovodev", []string{"acli"}},
+		{"opencode", []string{"opencode"}},
+		{"pi", []string{"pi"}},
+		{"copilot", []string{"copilot"}},
+		{"antigravity", []string{"agy"}},
+		{"acpx", []string{"acpx"}},
+	}
+	for _, alias := range types.ACPAliases() {
+		agents = append(agents, AgentCandidate{
+			Name:     string(alias.Name),
+			Binaries: []string{alias.DefaultCommandBinary(), "acpx"},
+		})
+	}
+	return agents
+}
+
+// AgentAvailability reports which of those agents this machine can launch. The
+// daemon needs at least one; a repository with none fails before its first
 // step, which is the diagnosis this answers.
-func agentChecks() []AgentCheck {
-	names := []string{"claude", "codex", "grok", "acli", "opencode", "pi", "copilot", "agy", "acpx"}
-	checks := make([]AgentCheck, 0, len(names))
-	for _, name := range names {
-		_, err := exec.LookPath(name)
-		checks = append(checks, AgentCheck{Name: name, Available: err == nil})
+func AgentAvailability() []AgentCheck {
+	candidates := AgentCandidates()
+	checks := make([]AgentCheck, 0, len(candidates))
+	for _, candidate := range candidates {
+		available := false
+		for _, binary := range candidate.Binaries {
+			if _, err := exec.LookPath(binary); err == nil {
+				available = true
+				break
+			}
+		}
+		checks = append(checks, AgentCheck{Name: candidate.Name, Available: available})
 	}
 	return checks
 }

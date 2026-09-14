@@ -69,18 +69,22 @@ func mcpScenario(t *testing.T) string {
 	return path
 }
 
-// allowMCPRoot appends the gateway's repository allowlist to the harness's
-// global config. It is written after setup because the allowed root is a
-// worktree path that does not exist until the test creates it.
-func allowMCPRoot(t *testing.T, h *Harness, root string) {
+// allowMCPRoots appends the gateway's repository allowlist to the harness's
+// global config. It is written after setup because the allowed roots are
+// worktree paths that do not exist until the test creates them, and written
+// once because a second mcp: block would be a duplicate YAML key.
+func allowMCPRoots(t *testing.T, h *Harness, roots ...string) {
 	t.Helper()
 	path := filepath.Join(h.NMHome, "config.yaml")
 	existing, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read global config: %v", err)
 	}
-	updated := string(existing) + fmt.Sprintf("mcp:\n  allowed_repo_roots:\n    - %s\n", root)
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+	block := "mcp:\n  allowed_repo_roots:\n"
+	for _, root := range roots {
+		block += fmt.Sprintf("    - %s\n", root)
+	}
+	if err := os.WriteFile(path, []byte(string(existing)+block), 0o644); err != nil {
 		t.Fatalf("write global config: %v", err)
 	}
 }
@@ -165,7 +169,9 @@ func TestMCPGatewayJourney(t *testing.T) {
 	}
 	head := h.CommitChange(branch, "feature.txt", "gateway\n", "add gateway feature")
 	worktree := h.AddWorktree(branch)
-	allowMCPRoot(t, h, filepath.Dir(worktree))
+	// The working clone sits on the default branch, and is allowlisted so the
+	// gateway's refusal to validate it is a branch decision, not a path one.
+	allowMCPRoots(t, h, filepath.Dir(worktree), filepath.Dir(h.WorkDir))
 
 	session := startMCPSession(t, h, h.WorkDir)
 	defer session.Close()
@@ -190,9 +196,19 @@ func TestMCPGatewayJourney(t *testing.T) {
 
 	// A repository outside the configured roots is refused, by path, before
 	// anything happens.
-	refused := mcpCall(t, session, "nomistakes_doctor", map[string]any{"repo_path": h.WorkDir})
+	outside := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.runGit(ctx, outside, "init"); err != nil {
+		t.Fatalf("init unrelated repo: %v\n%s", err, out)
+	}
+	refused := mcpCall(t, session, "nomistakes_doctor", map[string]any{"repo_path": outside})
 	if refused["ok"] != false {
-		t.Fatalf("the working clone is outside the allowed root and must be refused: %#v", refused)
+		t.Fatalf("a repository outside every allowed root must be refused: %#v", refused)
+	}
+	if errObj, _ := refused["error"].(map[string]any); errObj == nil || errObj["code"] != "repo_not_allowed" {
+		t.Fatalf("refusal = %#v", refused)
 	}
 
 	doctor := mcpCall(t, session, "nomistakes_doctor", map[string]any{"repo_path": worktree})
@@ -206,6 +222,20 @@ func TestMCPGatewayJourney(t *testing.T) {
 	idle := mcpCall(t, session, "nomistakes_status", map[string]any{"repo_path": worktree})
 	if idle["state"] != "idle" {
 		t.Fatalf("status before any run = %#v", idle)
+	}
+
+	// The gateway cannot be used to validate - and therefore publish - the
+	// default branch. That refusal is AXI's own pre-flight, surfaced typed.
+	defaultBranch := startMCPSession(t, h, h.WorkDir)
+	onMain := mcpCall(t, defaultBranch, "nomistakes_run", map[string]any{
+		"repo_path": h.WorkDir, "intent": mcpIntent, "wait_seconds": 60,
+	})
+	defaultBranch.Close()
+	if onMain["ok"] != false {
+		t.Fatalf("the gateway validated the default branch: %#v", onMain)
+	}
+	if errObj, _ := onMain["error"].(map[string]any); errObj == nil || errObj["code"] != "default_branch_refused" {
+		t.Fatalf("default-branch refusal = %#v", onMain)
 	}
 
 	gate := mcpCall(t, session, "nomistakes_run", map[string]any{

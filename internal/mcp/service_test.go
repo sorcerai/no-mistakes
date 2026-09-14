@@ -425,3 +425,79 @@ func TestRunNeverAutoApproves(t *testing.T) {
 		t.Errorf("intent = %q, want the caller's own words", axi.runCalls[0].Intent)
 	}
 }
+
+// TestSyncRejectsContradictoryRequests keeps a mutation the caller did not ask
+// for from being silently chosen: apply and recover are different mutations
+// with different authorizations, and keep_local only qualifies a recovery.
+func TestSyncRejectsContradictoryRequests(t *testing.T) {
+	for name, in := range map[string]SyncInput{
+		"apply and recover":          {Apply: true, Recover: true},
+		"keep_local without recover": {Apply: true, KeepLocal: true},
+	} {
+		axi := &fakeAXI{sync: &axiapi.SyncState{State: "behind", NextActionCode: "sync"}}
+		svc, repo := newService(t, axi)
+		in.RepoPath = repo
+		got := svc.Sync(context.Background(), in)
+		if got.OK || got.Error == nil || got.Error.Code != CodeInvalidAction {
+			t.Errorf("%s: receipt = %#v", name, got)
+		}
+		if len(axi.syncCalls) != 0 {
+			t.Errorf("%s: a contradictory request still reached AXI", name)
+		}
+	}
+}
+
+// TestRespondForwardsTheDecisionFlagToAXI pins that the boundary enforcing the
+// ask-user refusal against the live gate is told whether a human decided.
+func TestRespondForwardsTheDecisionFlagToAXI(t *testing.T) {
+	gate := &axiapi.Gate{Step: "review", Findings: []types.Finding{{ID: "r1", Action: types.ActionAutoFix, Description: "x"}}}
+	axi := &fakeAXI{
+		status:  &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA, Gate: gate},
+		respond: &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA, Status: string(types.RunRunning)},
+	}
+	svc, repo := newService(t, axi)
+	if got := svc.Respond(context.Background(), RespondInput{RepoPath: repo, Action: "approve"}); !got.OK {
+		t.Fatalf("receipt = %#v", got)
+	}
+	if axi.respondCalls[0].UserDecisionGiven {
+		t.Error("no decision was supplied, but the flag was set")
+	}
+
+	svc2, repo2 := newService(t, axi)
+	if got := svc2.Respond(context.Background(), RespondInput{RepoPath: repo2, Action: "approve", UserDecision: "the maintainer said yes"}); !got.OK {
+		t.Fatalf("receipt = %#v", got)
+	}
+	if !axi.respondCalls[1].UserDecisionGiven {
+		t.Error("a supplied decision did not reach AXI")
+	}
+}
+
+// TestAXIUserDecisionRefusalStaysTyped pins that a refusal raised against the
+// live gate - the run advanced into an ask-user gate after this layer read it -
+// still reaches the caller as the decision-required error, not an opaque one.
+func TestAXIUserDecisionRefusalStaysTyped(t *testing.T) {
+	axi := &fakeAXI{
+		status: &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA,
+			Gate: &axiapi.Gate{Step: "review", Findings: []types.Finding{{ID: "r1", Action: types.ActionAutoFix, Description: "x"}}}},
+		err: axiapi.ErrUserDecisionRequired,
+	}
+	svc, repo := newService(t, axi)
+	got := svc.Respond(context.Background(), RespondInput{RepoPath: repo, Action: "approve"})
+	if got.OK || got.Error == nil || got.Error.Code != CodeUserDecisionRequired {
+		t.Fatalf("receipt = %#v", got)
+	}
+}
+
+// TestDefaultBranchRefusalIsTyped pins the "no direct default-branch push"
+// non-goal as something a caller can branch on, not an opaque failure.
+func TestDefaultBranchRefusalIsTyped(t *testing.T) {
+	axi := &fakeAXI{err: axiapi.ErrDefaultBranch}
+	svc, repo := newService(t, axi)
+	got := svc.Run(context.Background(), RunInput{RepoPath: repo, Intent: "goal"})
+	if got.OK || got.Error == nil || got.Error.Code != CodeDefaultBranch {
+		t.Fatalf("receipt = %#v", got)
+	}
+	if got.Error.Remediation == "" {
+		t.Error("the refusal must say what to do instead")
+	}
+}

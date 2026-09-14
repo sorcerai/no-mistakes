@@ -86,3 +86,34 @@ func TestCIReadyToMerge(t *testing.T) {
 		t.Error("a run without a CI step must not be merge-ready")
 	}
 }
+
+// TestRequiresUserDecision pins what the pipeline refuses to decide for itself:
+// an ask-user finding, or a protected-path refusal. Nothing else needs a human.
+func TestRequiresUserDecision(t *testing.T) {
+	if RequiresUserDecision(nil) {
+		t.Error("no gate cannot require a decision")
+	}
+	mechanical := &Gate{Findings: []types.Finding{
+		{ID: "a", Action: types.ActionAutoFix, Description: "x"},
+		{ID: "b", Action: types.ActionNoOp, Description: "y"},
+	}}
+	if RequiresUserDecision(mechanical) {
+		t.Error("a gate with only mechanical and informational findings is the agent's to answer")
+	}
+	askUser := &Gate{Findings: []types.Finding{
+		{ID: "a", Action: types.ActionAutoFix, Description: "x"},
+		{ID: "b", Action: types.ActionAskUser, Description: "y"},
+	}}
+	if !RequiresUserDecision(askUser) {
+		t.Error("one ask-user finding makes the whole gate a human's")
+	}
+	if !RequiresUserDecision(&Gate{ProtectedPathRefusal: true}) {
+		t.Error("a protected-path refusal needs an explicit decision even with no findings")
+	}
+	// A finding with no action spelled out defaults to the pipeline's own
+	// default rather than being treated as a silent ask-user.
+	defaulted := &Gate{Findings: []types.Finding{{ID: "a", Description: "x"}}}
+	if RequiresUserDecision(defaulted) != (types.Finding{ID: "a"}.ActionOrDefault() == types.ActionAskUser) {
+		t.Error("an unspecified action must follow the shared default, not a local guess")
+	}
+}

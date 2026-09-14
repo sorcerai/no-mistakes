@@ -135,7 +135,7 @@ func NewReceipt(operation, repoPath string, state *axiapi.RunState) *Receipt {
 	case state.Gate != nil:
 		r.State = StateAwaitingDecision
 		r.Step = state.Gate.Step
-		r.RequiresUserDecision = requiresUserDecision(state.Gate)
+		r.RequiresUserDecision = axiapi.RequiresUserDecision(state.Gate)
 		for _, f := range state.Gate.Findings {
 			r.Findings = append(r.Findings, Finding{
 				ID: f.ID, Severity: f.Severity, Action: f.ActionOrDefault(),
@@ -173,25 +173,6 @@ func NewReceipt(operation, repoPath string, state *axiapi.RunState) *Receipt {
 		r.NextAction = &NextAction{Code: "reattach"}
 	}
 	return r
-}
-
-// requiresUserDecision reports whether the gate must go back to a human. An
-// ask-user finding is the pipeline saying it will not decide; a protected-path
-// refusal is the pipeline saying it will not act. Neither is the gateway's to
-// resolve.
-func requiresUserDecision(gate *axiapi.Gate) bool {
-	if gate == nil {
-		return false
-	}
-	if gate.ProtectedPathRefusal {
-		return true
-	}
-	for _, f := range gate.Findings {
-		if f.ActionOrDefault() == types.ActionAskUser {
-			return true
-		}
-	}
-	return false
 }
 
 // NewErrorReceipt renders a typed refusal.
