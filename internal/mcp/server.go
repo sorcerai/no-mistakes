@@ -41,7 +41,7 @@ func NewServer(svc *Service, version string) *sdk.Server {
 			"no-mistakes owns every mutation: review, tests, docs, lint, push, PR, and CI. " +
 			"Gates are never resolved here - they come back for a decision. " +
 			"intent is required: pass what the user set out to accomplish, not a description of the diff.",
-		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
+		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: false},
 	}, handler(func(ctx context.Context, in RunInput) *Receipt {
 		return svc.Run(ctx, in)
 	}))

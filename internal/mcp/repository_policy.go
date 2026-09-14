@@ -120,14 +120,23 @@ func (p *RepositoryPolicy) Resolve(repoPath string) (string, *PolicyError) {
 			Remediation: "Add the canonical repository root to mcp.allowed_repo_roots in the no-mistakes global config.",
 		}
 	}
-	if _, err := git.FindGitRoot(resolved); err != nil {
+	repositoryRoot, err := git.FindGitRoot(resolved)
+	if err != nil {
 		return "", &PolicyError{
 			Code:        CodeNotAGitRepository,
 			Message:     fmt.Sprintf("repo_path %q is not inside a git repository.", repoPath),
 			Remediation: "Point repo_path at a git working tree.",
 		}
 	}
-	return resolved, nil
+	repositoryRoot, err = canonical(repositoryRoot)
+	if err != nil || !p.contains(repositoryRoot) {
+		return "", &PolicyError{
+			Code:        CodeRepoNotAllowed,
+			Message:     fmt.Sprintf("repo_path %q belongs to a repository outside the configured repository roots.", repoPath),
+			Remediation: "Add the canonical repository root to mcp.allowed_repo_roots in the no-mistakes global config.",
+		}
+	}
+	return repositoryRoot, nil
 }
 
 // canonical resolves a path to its real absolute spelling. It requires the path

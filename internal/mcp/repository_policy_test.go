@@ -62,6 +62,25 @@ func TestPolicyAllowsTheRootItself(t *testing.T) {
 	}
 }
 
+func TestPolicyRejectsAllowlistedSubdirectoryOfRepository(t *testing.T) {
+	repo := mkGitRepo(t, filepath.Join(t.TempDir(), "project"))
+	allowed := filepath.Join(repo, "allowed")
+	if err := os.MkdirAll(allowed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := NewRepositoryPolicy([]string{allowed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, policyErr := policy.Resolve(allowed)
+	if policyErr == nil {
+		t.Fatal("a subdirectory allowlist must not grant access to its parent repository")
+	}
+	if policyErr.Code != CodeRepoNotAllowed {
+		t.Errorf("code = %q, want %q", policyErr.Code, CodeRepoNotAllowed)
+	}
+}
+
 func TestPolicyRejectsSiblingOutsideRoot(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "allowed")
