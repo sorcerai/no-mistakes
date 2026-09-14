@@ -13,6 +13,7 @@ import (
 
 	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/axiapi"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
@@ -79,37 +80,22 @@ func emitAxiWaitElapsed(cmd *cobra.Command, wait time.Duration, reattach string)
 
 // terminalStatus reports whether a run has reached a final state.
 func terminalStatus(status string) bool {
-	return types.RunStatus(status).Terminal()
+	return axiapi.TerminalStatus(status)
 }
 
 // outcomeFor maps a terminal run status onto an agent-facing outcome word.
 func outcomeFor(status string) string {
-	switch types.RunStatus(status) {
-	case types.RunCompleted:
-		return "passed"
-	case types.RunFailed:
-		return "failed"
-	case types.RunCancelled:
-		return "cancelled"
-	case types.RunCIMonitorInterrupted:
-		return "ci-monitor-interrupted"
-	default:
-		return status
-	}
+	return axiapi.Outcome(status, "", nil)
 }
 
 // outcomeForRun qualifies completed runs whose external checks were overridden
 // or whose publication/verification automatically skipped. Explicit per-run
 // skips carry no automatic cause and retain their existing outcome.
+//
+// The decision itself lives in internal/axiapi so the MCP gateway reports the
+// same word for the same run; see that package's doc comment.
 func outcomeForRun(rv runView) string {
-	word := outcomeFor(rv.Status)
-	if word == "passed" && rv.CIOverrideReason != "" {
-		return "passed-with-override"
-	}
-	if word == "passed" && len(rv.automaticSkips()) > 0 {
-		return "passed-with-skips"
-	}
-	return word
+	return axiapi.Outcome(rv.Status, rv.CIOverrideReason, rv.automaticSkips())
 }
 
 func newAxiRunCmd() *cobra.Command {
@@ -350,8 +336,8 @@ func conflictingActiveRunPRBaseBranch(run *ipc.RunInfo, requested string) error 
 
 func activeRunInfo(ctx context.Context, env *axiEnv, branch, headSHA string) (*ipc.RunInfo, error) {
 	var active ipc.GetActiveRunResult
-	source := &ipcRunStateSource{socketPath: env.p.Socket()}
-	if err := source.callWithSlowReplyRetry(ctx, ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+	source := &ipcRunStateSource{SocketPath: env.p.Socket()}
+	if err := source.CallWithSlowReplyRetry(ctx, ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
 		return nil, err
 	}
 	return activeRunInfoForHead(active.Run, headSHA), nil
@@ -741,7 +727,7 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 // pass driveRun returns with ciReady=true: the change is validated and the PR is
 // ready for a human to merge. The daemon keeps monitoring in the background.
 func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
-	reconciler := newRunReconciler(&ipcRunStateSource{socketPath: socketPath}, runID)
+	reconciler := newRunReconciler(&ipcRunStateSource{SocketPath: socketPath}, runID)
 	defer reconciler.Close()
 	return driveRunWithReconciler(ctx, progress, client, reconciler, runID, autoApprove)
 }
@@ -802,13 +788,7 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 // ciReadyToMerge reports whether the CI step is actively monitoring and the
 // daemon has persisted checks-passed readiness.
 func ciReadyToMerge(rv runView) bool {
-	activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
-	for _, s := range rv.Steps {
-		if s.Name == string(types.StepCI) {
-			return s.Status == string(types.StepStatusRunning) && activity.Ready
-		}
-	}
-	return false
+	return axiapi.CIReadyToMerge(rv.stepStates(), rv.CIReady, rv.CIReadyNoCI)
 }
 
 // gateResolution decides how --yes answers an approval gate. A gate with
@@ -843,7 +823,7 @@ func gateResolution(gate stepView, alreadyFixed bool) (types.ApprovalAction, []s
 // double-approve race: respond is asynchronous, so without waiting the next
 // event reconciliation could still observe the same gate and approve it twice.
 func waitStepLeavesGate(ctx context.Context, socketPath, runID, step, gateStatus string) error {
-	reconciler := newRunReconciler(&ipcRunStateSource{socketPath: socketPath}, runID)
+	reconciler := newRunReconciler(&ipcRunStateSource{SocketPath: socketPath}, runID)
 	defer reconciler.Close()
 	for {
 		run, err := reconciler.Next(ctx)
@@ -865,7 +845,7 @@ func waitStepLeavesGate(ctx context.Context, socketPath, runID, step, gateStatus
 }
 
 func getRunInfo(ctx context.Context, socketPath, runID string) (*ipc.RunInfo, error) {
-	return (&ipcRunStateSource{socketPath: socketPath}).Reconcile(ctx, runID)
+	return (&ipcRunStateSource{SocketPath: socketPath}).Reconcile(ctx, runID)
 }
 
 // sendRespond issues an approval action to the daemon for a step.
@@ -1092,8 +1072,8 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	}
 
 	var active ipc.GetActiveRunResult
-	source := &ipcRunStateSource{socketPath: env.p.Socket()}
-	if err := source.callWithSlowReplyRetry(driveCtx, ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+	source := &ipcRunStateSource{SocketPath: env.p.Socket()}
+	if err := source.CallWithSlowReplyRetry(driveCtx, ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
 			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
 		}

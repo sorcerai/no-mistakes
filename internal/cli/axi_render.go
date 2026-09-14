@@ -8,6 +8,7 @@ import (
 
 	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/axiapi"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -485,8 +486,8 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		}
 	}
 	fields = append(fields, toon.Field{Key: "steps", Value: rows})
-	if skips := rv.automaticSkips(); len(skips) > 0 {
-		fields = append(fields, toon.Field{Key: "automatic_skips", Value: skips})
+	if rows := rv.automaticSkipRows(); len(rows) > 0 {
+		fields = append(fields, toon.Field{Key: "automatic_skips", Value: rows})
 	}
 	if len(sharedRows) > 0 {
 		fields = append(fields, toon.Field{Key: "shared_work", Value: sharedRows})
@@ -497,15 +498,28 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	return toon.Field{Key: key, Value: toon.NewObject(fields...)}
 }
 
-func (rv runView) automaticSkips() []automaticSkipRow {
-	var rows []automaticSkipRow
-	for _, s := range rv.Steps {
-		if s.Status == string(types.StepStatusSkipped) && s.SkipReason != "" &&
-			(s.Name == string(types.StepPR) || s.Name == string(types.StepCI)) {
-			rows = append(rows, automaticSkipRow{Step: s.Name, Reason: s.SkipReason})
-		}
+func (rv runView) automaticSkips() []axiapi.AutomaticSkip {
+	return axiapi.AutomaticSkips(rv.stepStates())
+}
+
+// automaticSkipRows renders the automatic skips as a TOON table.
+func (rv runView) automaticSkipRows() []automaticSkipRow {
+	skips := rv.automaticSkips()
+	rows := make([]automaticSkipRow, 0, len(skips))
+	for _, s := range skips {
+		rows = append(rows, automaticSkipRow{Step: s.Step, Reason: s.Reason})
 	}
 	return rows
+}
+
+// stepStates projects the render view onto the typed AXI step vocabulary the
+// shared outcome decisions read.
+func (rv runView) stepStates() []axiapi.StepState {
+	states := make([]axiapi.StepState, 0, len(rv.Steps))
+	for _, s := range rv.Steps {
+		states = append(states, axiapi.StepState{Name: s.Name, Status: s.Status, SkipReason: s.SkipReason})
+	}
+	return states
 }
 
 // gateFields renders the active approval gate: the awaiting step, its findings

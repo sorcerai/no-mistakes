@@ -209,8 +209,9 @@ func TestRunReconciler_HeartbeatRecoversMissedTerminalEvent(t *testing.T) {
 			{ID: "run-1", Status: types.RunCompleted},
 		},
 	}
+	const heartbeat = 10 * time.Millisecond
 	reconciler := newRunReconciler(source, "run-1")
-	reconciler.heartbeatInterval = 10 * time.Millisecond
+	reconciler.SetIntervals(heartbeat, 0, 0)
 	defer reconciler.Close()
 	if _, err := reconciler.Next(context.Background()); err != nil {
 		t.Fatal(err)
@@ -224,7 +225,7 @@ func TestRunReconciler_HeartbeatRecoversMissedTerminalEvent(t *testing.T) {
 	if run.Status != types.RunCompleted {
 		t.Fatalf("heartbeat status = %s, want completed", run.Status)
 	}
-	if elapsed := time.Since(started); elapsed < reconciler.heartbeatInterval {
+	if elapsed := time.Since(started); elapsed < heartbeat {
 		t.Fatalf("heartbeat reconciled too early after %v", elapsed)
 	}
 }
@@ -241,8 +242,7 @@ func TestRunReconciler_ReconnectAndReconcileFailuresStayVisible(t *testing.T) {
 			runs: []*ipc.RunInfo{{ID: "run-1", Status: types.RunRunning}},
 		}
 		reconciler := newRunReconciler(source, "run-1")
-		reconciler.reconnectInterval = time.Millisecond
-		reconciler.reconnectTimeout = 3 * time.Millisecond
+		reconciler.SetIntervals(0, time.Millisecond, 3*time.Millisecond)
 		defer reconciler.Close()
 		if _, err := reconciler.Next(context.Background()); err != nil {
 			t.Fatal(err)
@@ -752,7 +752,7 @@ func TestRunReconciler_StreamGapForcesOneAuthoritativeRead(t *testing.T) {
 	defer reconciler.Close()
 	// Disable the slow lost-event backstop so only the gap can wake the
 	// reconciler; otherwise the heartbeat would mask a missing gap route.
-	reconciler.heartbeatInterval = time.Hour
+	reconciler.SetIntervals(time.Hour, 0, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -788,7 +788,7 @@ func TestRunReconciler_UnknownEventTypeIsTreatedAsStateBearing(t *testing.T) {
 	}
 	reconciler := newRunReconciler(source, "run-1")
 	defer reconciler.Close()
-	reconciler.heartbeatInterval = time.Hour
+	reconciler.SetIntervals(time.Hour, 0, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
