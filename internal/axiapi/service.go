@@ -125,11 +125,10 @@ type RunState struct {
 }
 
 type RunRequest struct {
-	RepoPath   string
-	Intent     string
-	BaseBranch string
-	Skip       []types.StepName
-	Wait       time.Duration
+	RepoPath string
+	Intent   string
+	Skip     []types.StepName
+	Wait     time.Duration
 }
 
 type RespondRequest struct {
@@ -392,6 +391,9 @@ func resolveRun(e *env, runID, branch string) (*db.Run, error) {
 		run, err := e.d.GetRun(runID)
 		if err != nil {
 			return nil, fmt.Errorf("get run: %w", err)
+		}
+		if run != nil && run.RepoID != e.repo.ID {
+			return nil, fmt.Errorf("run %q not found", runID)
 		}
 		return run, nil
 	}

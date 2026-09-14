@@ -120,6 +120,34 @@ func TestStatusIsBranchScoped(t *testing.T) {
 	}
 }
 
+func TestExplicitRunIDCannotCrossRepositoryBoundary(t *testing.T) {
+	f := newFixture(t)
+	other := filepath.Join(t.TempDir(), "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, other, "init", "-b", "main")
+	gitRun(t, other, "commit", "--allow-empty", "-m", "initial")
+	resolvedOther, err := filepath.EvalSymlinks(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRepo, err := f.db.InsertRepo(resolvedOther, "https://example.test/o/other.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := gitRun(t, resolvedOther, "rev-parse", "HEAD")
+	run, err := f.db.InsertRun(otherRepo.ID, "main-work", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = f.svc.Status(context.Background(), f.repoPath, run.ID)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("Status cross-repository run error = %v, want not found", err)
+	}
+}
+
 // TestStatusSurfacesGateFindings proves the gate, its findings, and their
 // action classification survive the typed boundary.
 func TestStatusSurfacesGateFindings(t *testing.T) {

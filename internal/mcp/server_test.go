@@ -249,13 +249,17 @@ func TestRunToolExposesNoAutoApproveInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tool := range list.Tools {
-		schema, err := json.Marshal(tool.InputSchema)
-		if err != nil {
-			t.Fatal(err)
+		schema, ok := tool.InputSchema.(map[string]any)
+		if !ok {
+			t.Fatalf("%s schema type = %T, want normalized object", tool.Name, tool.InputSchema)
 		}
-		for _, banned := range []string{"\"yes\"", "auto_approve", "auto_fix", "auto_yes"} {
-			if strings.Contains(string(schema), banned) {
-				t.Errorf("%s exposes %s", tool.Name, banned)
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s properties type = %T, want normalized object", tool.Name, schema["properties"])
+		}
+		for _, banned := range []string{"yes", "auto_approve", "auto_fix", "auto_yes"} {
+			if _, exposed := properties[banned]; exposed {
+				t.Errorf("%s exposes %s input", tool.Name, banned)
 			}
 		}
 	}

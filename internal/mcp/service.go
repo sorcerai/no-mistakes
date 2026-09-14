@@ -69,7 +69,6 @@ type RunInput struct {
 	// summarized: the pipeline uses it directly instead of inferring one.
 	Intent      string   `json:"intent"`
 	Skip        []string `json:"skip,omitempty"`
-	BaseBranch  string   `json:"base_branch,omitempty"`
 	WaitSeconds int      `json:"wait_seconds,omitempty"`
 }
 
@@ -150,7 +149,7 @@ func (s *Service) Run(ctx context.Context, in RunInput) *Receipt {
 		return refusal
 	}
 	state, err := s.AXI.Run(ctx, axiapi.RunRequest{
-		RepoPath: repoPath, Intent: in.Intent, BaseBranch: in.BaseBranch,
+		RepoPath: repoPath, Intent: in.Intent,
 		Skip: skip, Wait: boundedWait(in.WaitSeconds),
 	})
 	if err != nil {

@@ -11,7 +11,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
-	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -53,12 +52,6 @@ func (s *LocalService) Run(ctx context.Context, req RunRequest) (*RunState, erro
 	if err != nil {
 		return nil, fmt.Errorf("get current HEAD: %w", err)
 	}
-	if strings.TrimSpace(req.BaseBranch) != "" {
-		if _, err := steps.ValidateRunPRBaseBranchName(req.BaseBranch); err != nil {
-			return nil, fmt.Errorf("base branch: %w", err)
-		}
-	}
-
 	driveCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
@@ -163,9 +156,6 @@ func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest
 	if opt := FormatIntentPushOption(req.Intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
-	if opt := FormatPRBaseBranchPushOption(req.BaseBranch); opt != "" {
-		pushOptions = append(pushOptions, opt)
-	}
 	priorRunIDs, err := runIDsForHead(e.client, e.repo.ID, branch, headSHA)
 	if err != nil {
 		// Without a baseline a matching terminal run may predate this push, so
@@ -197,7 +187,7 @@ func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest
 	var rr ipc.RerunResult
 	params := &ipc.RerunParams{
 		RepoID: e.repo.ID, Branch: branch, SkipSteps: req.Skip,
-		Intent: req.Intent, PRBaseBranch: req.BaseBranch, CallerHeadSHA: callerHead,
+		Intent: req.Intent, CallerHeadSHA: callerHead,
 	}
 	if err := e.client.Call(ipc.MethodRerun, params, &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %w", branch, err)
@@ -309,6 +299,7 @@ func (s *LocalService) Respond(ctx context.Context, req RespondRequest) (*RunSta
 	defer cancel()
 
 	runID := req.RunID
+	explicitRunID := runID != ""
 	if runID == "" {
 		branch, err := currentBranch(ctx, e.repoPath)
 		if err != nil {
@@ -326,6 +317,15 @@ func (s *LocalService) Respond(ctx context.Context, req RespondRequest) (*RunSta
 			return nil, ErrNoRunForBranch
 		}
 		runID = active.Run.ID
+	}
+	if explicitRunID {
+		run, err := resolveRun(e, runID, "")
+		if err != nil {
+			return nil, err
+		}
+		if run == nil {
+			return nil, fmt.Errorf("run %s not found", runID)
+		}
 	}
 
 	run, err := getRun(driveCtx, e.p.Socket(), runID)
