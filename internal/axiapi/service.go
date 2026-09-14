@@ -717,7 +717,7 @@ func (s *LocalService) GateContext(ctx context.Context, repoPath string) (gateco
 		}
 		defer client.Close()
 		var wire ipc.GateContextResult
-		if err := client.Call(ipc.MethodGateContext, &ipc.GateContextParams{CWD: repoPath, MarkerPresent: marker}, &wire); err != nil {
+		if err := callIPC(ctx, client, ipc.MethodGateContext, &ipc.GateContextParams{CWD: repoPath, MarkerPresent: marker}, &wire); err != nil {
 			return gatecontext.Result{}, fmt.Errorf("classify gate execution context: %w", err)
 		}
 		return gatecontext.Result{
