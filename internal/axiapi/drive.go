@@ -158,9 +158,7 @@ func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest
 	}
 	priorRunIDs, err := runIDsForHead(ctx, e.client, e.repo.ID, branch, headSHA)
 	if err != nil {
-		// Without a baseline a matching terminal run may predate this push, so
-		// do not attach to one; the active-run lookup below still applies.
-		priorRunIDs = nil
+		return "", fmt.Errorf("get prior runs for %q: %w", branch, err)
 	}
 	if state := branchOwnership(ctx, e); state != nil {
 		return "", &BranchOwnershipError{State: *state}

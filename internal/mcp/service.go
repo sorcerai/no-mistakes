@@ -145,10 +145,12 @@ func (s *Service) Run(ctx context.Context, in RunInput) *Receipt {
 			Remediation: "Valid steps: " + strings.Join(stepNames(), ", "),
 		})
 	}
-	if refusal := s.refuseNested(ctx, OpRun, repoPath); refusal != nil {
+	requestCtx, cancel := context.WithTimeout(ctx, boundedWait(in.WaitSeconds))
+	defer cancel()
+	if refusal := s.refuseNested(requestCtx, OpRun, repoPath); refusal != nil {
 		return refusal
 	}
-	state, err := s.AXI.Run(ctx, axiapi.RunRequest{
+	state, err := s.AXI.Run(requestCtx, axiapi.RunRequest{
 		RepoPath: repoPath, Intent: in.Intent,
 		Skip: skip, Wait: boundedWait(in.WaitSeconds),
 	})
@@ -177,10 +179,12 @@ func (s *Service) Respond(ctx context.Context, in RespondInput) *Receipt {
 			Remediation: "Use approve, fix, or skip. Aborting a run is not an MCP operation.",
 		})
 	}
-	if refusal := s.refuseNested(ctx, OpRespond, repoPath); refusal != nil {
+	requestCtx, cancel := context.WithTimeout(ctx, boundedWait(in.WaitSeconds))
+	defer cancel()
+	if refusal := s.refuseNested(requestCtx, OpRespond, repoPath); refusal != nil {
 		return refusal
 	}
-	state, err := s.AXI.Status(ctx, repoPath, strings.TrimSpace(in.RunID))
+	state, err := s.AXI.Status(requestCtx, repoPath, strings.TrimSpace(in.RunID))
 	if err != nil {
 		return s.fail(OpRespond, repoPath, err)
 	}
@@ -207,7 +211,7 @@ func (s *Service) Respond(ctx context.Context, in RespondInput) *Receipt {
 		}
 		return receipt
 	}
-	next, err := s.AXI.Respond(ctx, axiapi.RespondRequest{
+	next, err := s.AXI.Respond(requestCtx, axiapi.RespondRequest{
 		RepoPath: repoPath, RunID: state.RunID, Action: action,
 		FindingIDs: in.FindingIDs, Instructions: in.Instructions,
 		UserDecisionGiven: strings.TrimSpace(in.UserDecision) != "",

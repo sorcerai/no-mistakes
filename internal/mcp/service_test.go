@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/axiapi"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
@@ -29,6 +30,7 @@ type fakeAXI struct {
 	syncApplied *axiapi.SyncState
 	doctor      *axiapi.DoctorReport
 	gate        gatecontext.Result
+	blockGate   bool
 
 	err error
 
@@ -85,7 +87,11 @@ func (f *fakeAXI) Doctor(_ context.Context, repoPath string) (*axiapi.DoctorRepo
 	return f.doctor, nil
 }
 
-func (f *fakeAXI) GateContext(_ context.Context, repoPath string) (gatecontext.Result, error) {
+func (f *fakeAXI) GateContext(ctx context.Context, repoPath string) (gatecontext.Result, error) {
+	if f.blockGate {
+		<-ctx.Done()
+		return gatecontext.Result{}, ctx.Err()
+	}
 	return f.gate, nil
 }
 
@@ -175,6 +181,32 @@ func TestMutatingToolsRefuseNestedGateContext(t *testing.T) {
 	axi.status = &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA}
 	if got := svc.Status(context.Background(), StatusInput{RepoPath: repo}); !got.OK {
 		t.Errorf("status must stay available to a nested caller: %#v", got)
+	}
+}
+
+func TestMutatingToolsBoundNestedGateCheckByWait(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*Service, string) *Receipt
+	}{
+		{name: "run", call: func(s *Service, repo string) *Receipt {
+			return s.Run(context.Background(), RunInput{RepoPath: repo, Intent: "goal", WaitSeconds: 1})
+		}},
+		{name: "respond", call: func(s *Service, repo string) *Receipt {
+			return s.Respond(context.Background(), RespondInput{RepoPath: repo, Action: "approve", WaitSeconds: 1})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, repo := newService(t, &fakeAXI{blockGate: true})
+			started := time.Now()
+			got := tc.call(svc, repo)
+			if got.OK || got.Error == nil || got.Error.Code != CodeNestedGateContext {
+				t.Fatalf("receipt = %#v, want bounded nested-gate refusal", got)
+			}
+			if elapsed := time.Since(started); elapsed > 2*time.Second {
+				t.Fatalf("nested-gate check took %s, exceeded MCP wait bound", elapsed)
+			}
+		})
 	}
 }
 
