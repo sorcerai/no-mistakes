@@ -504,9 +504,9 @@ func boundedWait(seconds int) time.Duration {
 	if seconds <= 0 {
 		return axiapi.DefaultWait
 	}
-	wait := time.Duration(seconds) * time.Second
-	if wait > maxWait {
+	maxSeconds := int(maxWait / time.Second)
+	if seconds > maxSeconds {
 		return maxWait
 	}
-	return wait
+	return time.Duration(seconds) * time.Second
 }

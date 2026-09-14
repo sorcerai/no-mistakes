@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"math"
 	"path/filepath"
 	"testing"
 
@@ -10,6 +11,12 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestBoundedWaitClampsBeforeDurationOverflow(t *testing.T) {
+	if got := boundedWait(math.MaxInt); got != maxWait {
+		t.Fatalf("boundedWait(MaxInt) = %s, want %s", got, maxWait)
+	}
+}
 
 // fakeAXI records what the gateway asked AXI to do, so a test can prove a
 // refusal never reached the pipeline.
