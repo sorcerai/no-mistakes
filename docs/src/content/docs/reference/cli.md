@@ -362,6 +362,26 @@ Pipeline-created commits remain preserved in the gate and a recoverable cancella
 While a run is active, do not use `axi abort` or `no-mistakes rerun` to go fix a finding yourself.
 That cancels the pipeline's in-flight work and forces a full re-validation; use `axi respond --action fix` at the gate so the pipeline applies and re-checks the fix.
 
+## no-mistakes mcp serve
+
+Serve no-mistakes as a Model Context Protocol server so an agent surface can drive the pipeline without direct forge write access.
+
+```sh
+no-mistakes mcp serve --stdio
+```
+
+| Flag      | Type   | Default | Description                                          |
+| --------- | ------ | ------- | ---------------------------------------------------- |
+| `--stdio` | `bool` | `false` | Serve over stdio. Required; the only v1 transport.    |
+
+stdout carries MCP protocol messages only and every diagnostic goes to stderr, so this command is launched by an MCP client rather than read in a terminal.
+
+Six tools are registered: `nomistakes_status`, `nomistakes_run`, `nomistakes_respond`, `nomistakes_logs`, `nomistakes_sync`, and `nomistakes_doctor`. There is no merge tool, no push tool, and no abort tool, and no tool writes to a forge - publication stays inside the push and PR steps.
+
+Repositories must be allowlisted under [`mcp.allowed_repo_roots`](/no-mistakes/reference/global-config/#mcpallowed_repo_roots); the gateway serves none by default. Findings the pipeline marked `ask-user`, and protected-path refusals, are returned for a human decision and cannot be answered through the gateway without one.
+
+See the [MCP Gateway guide](/no-mistakes/guides/mcp/) for client wiring, the receipt shape, and the agent loop.
+
 ## no-mistakes eject
 
 Remove the gate from the current repository.

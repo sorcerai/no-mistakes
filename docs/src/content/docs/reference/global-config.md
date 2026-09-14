@@ -58,6 +58,11 @@ log_level: info
 
 session_reuse: true
 
+mcp:
+  allowed_repo_roots:
+    - /Users/you/src
+    - /srv/repos
+
 worktree_roots:
   /Users/you/src/my-repo: /Users/you/work/my-repo-runs
 
@@ -570,6 +575,23 @@ Each run records the directory it was created in, so editing, adding, or removin
 The key is matched against the checkout path recorded at `init`. After moving a checkout, re-run `no-mistakes init` from the new path and update the key; a key that matches no registered repository is reported in the daemon log at startup and otherwise does nothing.
 
 `no-mistakes init --worktree-root <dir>` prints the exact entry to add for the checkout you are initializing. The global config is hand-maintained, so init never rewrites it for you.
+
+### mcp.allowed_repo_roots
+
+Repositories the [MCP gateway](/no-mistakes/guides/mcp/) may serve.
+
+|         |                                      |
+| ------- | ------------------------------------ |
+| Type    | `[]string` (absolute directory paths) |
+| Default | Empty - the gateway serves nothing   |
+
+`no-mistakes mcp serve --stdio` refuses every repository unless its canonical path lies under one of these roots. The path a caller passes is made absolute and its symlinks resolved before the comparison, so a link inside an allowed root that points outside it is refused rather than laundered into access. A path that escapes its root through `..`, a path that cannot be resolved, and a path that is not a git repository are all refused too - never normalized into something nearby.
+
+Containment is by path segment: `/srv/repos-archive` is not inside `/srv/repos`.
+
+A relative root is rejected at load time, because a long-running server has no working directory to resolve it against. A root that does not exist is ignored rather than widening the allowlist to its unresolved spelling.
+
+This setting is global-only and has no repository counterpart. It decides which repositories this machine's no-mistakes will mutate on an external agent's behalf, so no pushed branch can contribute to it - the same boundary the code-executing [repo config](/no-mistakes/reference/repo-config/) fields sit behind.
 
 ### auto_fix
 
