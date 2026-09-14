@@ -83,7 +83,7 @@ external agent's behalf, so a pushed branch has no way to widen it. See
 | `nomistakes_status` | read-only | The run for a repository's current branch, or a named run: state, gate findings, PR URL, full head SHA, skipped validation, next action. |
 | `nomistakes_run` | write | Starts a run, or reattaches to the one in flight, and returns at the first gate, the terminal outcome, or the bounded wait. Requires `intent`. |
 | `nomistakes_respond` | write | Answers the gate a run is parked at with `approve`, `fix`, or `skip`. |
-| `nomistakes_logs` | read-only | A bounded tail of one pipeline step's log. |
+| `nomistakes_logs` | read-only | A bounded tail of one pipeline step's log. `tail_lines` defaults to 80 and is capped at 500. |
 | `nomistakes_sync` | write (guarded) | Reads branch synchronization; applies it or returns custody only when no-mistakes' own next action authorizes exactly that. |
 | `nomistakes_doctor` | read-only | Whether the repository is initialized, whether the daemon is running, which agents this machine can launch. |
 
@@ -209,7 +209,8 @@ compared against a forge, which makes it useless as evidence.
 ### Bounded waits
 
 `nomistakes_run` and `nomistakes_respond` accept `wait_seconds` (default eight
-minutes) so a call returns before your own tool budget expires. When that wait
+minutes, capped at thirty) so a call returns before your own tool budget
+expires. When that wait
 elapses the run keeps going: the receipt reports `running`, warns that the hold
 ended, and sets `next_action.code` to `reattach`. It is not a failure and not a
 terminal state.

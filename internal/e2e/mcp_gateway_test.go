@@ -335,6 +335,43 @@ func TestMCPGatewayJourney(t *testing.T) {
 	if state, _ := final["state"].(string); !strings.HasPrefix(state, "passed") {
 		t.Fatalf("final state = %q, want a passed outcome", state)
 	}
+
+	// Synchronization against the real branch-sync service: reading always
+	// works, and a mutation happens only when no-mistakes' own next action
+	// authorizes it.
+	inspected := mcpCall(t, resumed, "nomistakes_sync", map[string]any{"repo_path": worktree})
+	if inspected["ok"] != true {
+		t.Fatalf("sync inspection: %#v", inspected)
+	}
+	syncData, _ := inspected["data"].(map[string]any)
+	nextAction, _ := syncData["next_action"].(map[string]any)
+	code, _ := nextAction["code"].(string)
+	if code == "" {
+		t.Fatalf("sync reported no next action: %#v", inspected)
+	}
+
+	applied := mcpCall(t, resumed, "nomistakes_sync", map[string]any{"repo_path": worktree, "apply": true})
+	if code == "sync" {
+		if applied["ok"] != true {
+			t.Fatalf("an authorized sync was refused: %#v", applied)
+		}
+	} else {
+		if applied["ok"] != false {
+			t.Fatalf("sync ran with next action %q, which does not authorize it: %#v", code, applied)
+		}
+		if errObj, _ := applied["error"].(map[string]any); errObj == nil || errObj["code"] != "sync_not_authorized" {
+			t.Fatalf("sync refusal = %#v", applied)
+		}
+	}
+
+	// Recovery is a different mutation and is never reachable by asserting it
+	// alongside a plain synchronization.
+	contradictory := mcpCall(t, resumed, "nomistakes_sync", map[string]any{
+		"repo_path": worktree, "apply": true, "recover": true,
+	})
+	if contradictory["ok"] != false {
+		t.Fatalf("apply and recover were accepted together: %#v", contradictory)
+	}
 }
 
 // assertIntentReachedAgent proves the caller's own intent text was handed to
