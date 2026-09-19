@@ -538,9 +538,11 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	}
 	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, observedHead)
 	if err != nil {
-		// An active run can still be found below. Without a baseline, however,
-		// a matching terminal run may predate this push, so do not attach to it.
-		priorRunIDs = nil
+		// Without a baseline, a fast-terminal run this push creates looks like
+		// an older one, so the poll would miss it and the fallback would start
+		// a second run for the same head. Refuse before pushing: a baseline
+		// taken after the push could already include the new run.
+		return "", fmt.Errorf("get prior runs for %q: %w", branch, err)
 	}
 	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 		return "", &branchOwnershipError{state: *state}
@@ -553,9 +555,12 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 		return "", fmt.Errorf("prepare private mirror for %q: refresh submission head: %w", branch, err)
 	}
 	if submissionHead != observedHead {
+		// Same refusal as the first baseline: this one rebinds it to the head
+		// actually being submitted, and is just as pre-push, so a failure here
+		// must not fall through to a baseline-less push either.
 		priorRunIDs, err = runIDsForHead(env.client, env.repo.ID, branch, submissionHead)
 		if err != nil {
-			priorRunIDs = nil
+			return "", fmt.Errorf("get prior runs for %q: %w", branch, err)
 		}
 	}
 	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "")
