@@ -1,9 +1,11 @@
 package axiapi
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -579,21 +581,77 @@ func (s *LocalService) Logs(ctx context.Context, req LogsRequest) (*StepLog, err
 	}
 
 	out := &StepLog{RunID: run.ID, Step: step}
-	data, err := os.ReadFile(filepath.Join(e.p.RunLogDir(run.ID), step+".log"))
+	file, err := os.Open(filepath.Join(e.p.RunLogDir(run.ID), step+".log"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return out, nil
 		}
 		return nil, fmt.Errorf("read log: %w", err)
 	}
-	lines := splitLogLines(string(data))
-	out.TotalLines = len(lines)
-	out.Lines = lines
-	if req.TailLines > 0 && len(lines) > req.TailLines {
-		out.Lines = lines[len(lines)-req.TailLines:]
-		out.Truncated = true
+	defer file.Close()
+
+	const maxLogTailLines = 500
+	tailLines := req.TailLines
+	if tailLines <= 0 || tailLines > maxLogTailLines {
+		tailLines = maxLogTailLines
 	}
+	lines, totalLines, err := readLogTail(ctx, file, tailLines)
+	if err != nil {
+		return nil, fmt.Errorf("read log: %w", err)
+	}
+	out.TotalLines = totalLines
+	out.Lines = lines
+	out.Truncated = totalLines > len(lines)
 	return out, nil
+}
+
+func readLogTail(ctx context.Context, file *os.File, tailLines int) ([]string, int, error) {
+	reader := bufio.NewReader(file)
+	lines := make([]string, 0, tailLines)
+	totalLines := 0
+	var pending string
+	hasPending := false
+	pendingTerminated := false
+
+	addLine := func(line string) {
+		totalLines++
+		if len(lines) < tailLines {
+			lines = append(lines, line)
+			return
+		}
+		copy(lines, lines[1:])
+		lines[len(lines)-1] = line
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
+		default:
+		}
+
+		chunk, err := reader.ReadString('\n')
+		if len(chunk) > 0 {
+			line := strings.TrimSuffix(chunk, "\n")
+			if hasPending {
+				addLine(pending)
+			}
+			pending = line
+			hasPending = true
+			pendingTerminated = strings.HasSuffix(chunk, "\n")
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				return nil, 0, err
+			}
+			if hasPending && (!pendingTerminated || pending != "") {
+				addLine(pending)
+			}
+			break
+		}
+	}
+
+	return lines, totalLines, nil
 }
 
 func validStep(step types.StepName) bool {
