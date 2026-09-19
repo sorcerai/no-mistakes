@@ -302,10 +302,7 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			runID, err = triggerRun(ctx, env, branch, skipSteps, intent, baseBranch, profile)
 		}
 		if err != nil {
-			if ownershipErr, ok := err.(*branchOwnershipError); ok {
-				return emitBranchOwnershipError(cmd, ownershipErr)
-			}
-			return emitError(cmd, 1, err.Error())
+			return emitTriggerError(cmd, err)
 		}
 	}
 	if launchReceipt != nil {
@@ -470,6 +467,42 @@ func (e *branchOwnershipError) Error() string {
 	return "the pipeline still owns this branch; no fresh run was started"
 }
 
+// pushedRunRetryGuidance is only ever correct when the push reached the gate.
+// Retrying is safe for an active run, which reattaches, but a fast-terminal
+// run is not found by a bare retry and a second run is started instead.
+const pushedRunRetryGuidance = "The push reached the gate, so a run may already exist: check `no-mistakes axi status` before retrying"
+
+// emitTriggerError renders a failure to start a run. Only a poll failure that
+// followed a successful push carries the retry guidance; every other failure,
+// including the two pre-push baseline refusals and a failed push, must not
+// tell the caller a push happened when it provably did not.
+func emitTriggerError(cmd *cobra.Command, err error) error {
+	if ownershipErr, ok := err.(*branchOwnershipError); ok {
+		return emitBranchOwnershipError(cmd, ownershipErr)
+	}
+	var waitErr *triggeredRunWaitError
+	if errors.As(err, &waitErr) {
+		return emitError(cmd, 1, err.Error(), pushedRunRetryGuidance)
+	}
+	return emitError(cmd, 1, err.Error())
+}
+
+// triggeredRunWaitError marks a poll failure that followed a push which did
+// reach the gate. That push very probably created a run, so the caller is
+// pointed at it before retrying: a blind retry of a fast-terminal run
+// legitimately starts a second run, which is the duplicate this guard exists
+// to prevent. A poll failure after a FAILED push carries the push error
+// instead and never reaches here.
+type triggeredRunWaitError struct {
+	err error
+}
+
+func (e *triggeredRunWaitError) Error() string {
+	return fmt.Sprintf("wait for triggered run: %v", e.err)
+}
+
+func (e *triggeredRunWaitError) Unwrap() error { return e.err }
+
 func emitBranchOwnershipError(cmd *cobra.Command, ownershipErr *branchOwnershipError) error {
 	state := ownershipErr.state
 	fields := []toon.Field{
@@ -595,7 +628,12 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	// this push may have created.
 	run, waitErr := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, submissionHead, priorRunIDs, triggerWaitTimeout)
 	if waitErr != nil {
-		return "", fmt.Errorf("wait for triggered run: %w", waitErr)
+		if pushErr != nil {
+			// The push is the root cause and the poll never had a run to find,
+			// so report both rather than dropping the cause for the symptom.
+			return "", fmt.Errorf("push %q to gate: %v; wait for triggered run: %w", branch, pushErr, waitErr)
+		}
+		return "", &triggeredRunWaitError{err: waitErr}
 	}
 	if run != nil {
 		if !run.PiProfile.Matches(profile) {
