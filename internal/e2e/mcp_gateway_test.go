@@ -345,9 +345,15 @@ func TestMCPGatewayJourney(t *testing.T) {
 	}
 	syncData, _ := inspected["data"].(map[string]any)
 	nextAction, _ := syncData["next_action"].(map[string]any)
+	if nextAction == nil {
+		t.Fatalf("sync reported no next_action field: %#v", inspected)
+	}
+	// An empty code is legitimate: a merged, closed, or synchronized branch has
+	// nothing to do, and that must refuse a mutation like any other code.
 	code, _ := nextAction["code"].(string)
-	if code == "" {
-		t.Fatalf("sync reported no next action: %#v", inspected)
+	headBefore, err := h.runGit(ctx, worktree, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("read worktree head: %v\n%s", err, headBefore)
 	}
 
 	applied := mcpCall(t, resumed, "nomistakes_sync", map[string]any{"repo_path": worktree, "apply": true})
@@ -361,6 +367,12 @@ func TestMCPGatewayJourney(t *testing.T) {
 		}
 		if errObj, _ := applied["error"].(map[string]any); errObj == nil || errObj["code"] != "sync_not_authorized" {
 			t.Fatalf("sync refusal = %#v", applied)
+		}
+		if data, _ := applied["data"].(map[string]any); data == nil || data["changed"] != false {
+			t.Fatalf("a refused sync reported a change: %#v", applied)
+		}
+		if headAfter, err := h.runGit(ctx, worktree, "rev-parse", "HEAD"); err != nil || string(headAfter) != string(headBefore) {
+			t.Fatalf("a refused sync moved HEAD from %s to %s (%v)", headBefore, headAfter, err)
 		}
 	}
 
