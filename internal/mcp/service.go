@@ -225,13 +225,20 @@ func (s *Service) Respond(ctx context.Context, in RespondInput) *Receipt {
 		RepoPath: repoPath, RunID: state.RunID, Action: action,
 		FindingIDs: in.FindingIDs, Instructions: in.Instructions,
 		UserDecisionGiven: strings.TrimSpace(in.UserDecision) != "",
-		ApprovalReason:    in.UserDecision,
+		ApprovalReason:    testApprovalReason(state, action, in.UserDecision),
 		Wait:              wait,
 	})
 	if err != nil {
 		return s.fail(OpRespond, repoPath, err)
 	}
 	return NewReceipt(OpRespond, repoPath, next)
+}
+
+func testApprovalReason(state *axiapi.RunState, action types.ApprovalAction, decision string) string {
+	if state != nil && state.Gate != nil && state.Gate.Step == string(types.StepTest) && action == types.ActionApprove {
+		return decision
+	}
+	return ""
 }
 
 // Logs is read-only and bounded.

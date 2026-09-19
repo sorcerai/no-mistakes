@@ -511,8 +511,25 @@ func TestRespondForwardsTheDecisionFlagToAXI(t *testing.T) {
 	if !axi.respondCalls[1].UserDecisionGiven {
 		t.Error("a supplied decision did not reach AXI")
 	}
-	if got := axi.respondCalls[1].ApprovalReason; got != "the maintainer said yes" {
-		t.Errorf("approval reason = %q, want the human decision", got)
+	if got := axi.respondCalls[1].ApprovalReason; got != "" {
+		t.Errorf("review approval reason = %q, want empty", got)
+	}
+}
+
+func TestRespondForwardsApprovalReasonOnlyForTestApproval(t *testing.T) {
+	axi := &fakeAXI{
+		status: &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA, Gate: &axiapi.Gate{Step: string(types.StepTest)}},
+		respond: &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA, Status: string(types.RunRunning)},
+	}
+	svc, repo := newService(t, axi)
+	got := svc.Respond(context.Background(), RespondInput{
+		RepoPath: repo, Action: "approve", UserDecision: "accepted the inconclusive live result",
+	})
+	if !got.OK {
+		t.Fatalf("receipt = %#v", got)
+	}
+	if got := axi.respondCalls[0].ApprovalReason; got != "accepted the inconclusive live result" {
+		t.Errorf("Test approval reason = %q, want the human decision", got)
 	}
 }
 
