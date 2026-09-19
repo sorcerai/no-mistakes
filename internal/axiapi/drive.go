@@ -406,6 +406,7 @@ func (s *LocalService) Respond(ctx context.Context, req RespondRequest) (*RunSta
 	params := &ipc.RespondParams{
 		RunID: runID, Step: types.StepName(gateStep), Action: req.Action,
 		FindingIDs: req.FindingIDs, Instructions: req.Instructions,
+		ApprovalReason: req.ApprovalReason,
 	}
 	if err := callIPC(driveCtx, e.client, ipc.MethodRespond, params, &result); err != nil {
 		return nil, fmt.Errorf("respond to %s: %w", gateStep, err)

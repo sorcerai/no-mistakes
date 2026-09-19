@@ -170,7 +170,7 @@ func NewReceipt(operation, repoPath string, state *axiapi.RunState) *Receipt {
 			"%d validation step(s) did not run; this outcome establishes neither CI readiness nor a code failure. See automatic_skips.",
 			len(r.AutomaticSkips)))
 	}
-	if state.WaitElapsed {
+	if state.WaitElapsed && !state.Terminal && !state.CIReady && state.Gate == nil {
 		// A bounded hold ending is not a pipeline failure. The run is still in
 		// flight, so the receipt says so and points at the reattach.
 		r.Warnings = append(r.Warnings, "The bounded wait elapsed while the run was still in flight; this is not a failure. Reattach to keep driving it.")

@@ -2,6 +2,7 @@ package axiapi
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -146,6 +147,7 @@ type RespondRequest struct {
 	// the only thing that lets a gate holding ask-user findings, or a
 	// protected-path refusal, be answered.
 	UserDecisionGiven bool
+	ApprovalReason    string
 	Wait              time.Duration
 }
 
@@ -595,63 +597,127 @@ func (s *LocalService) Logs(ctx context.Context, req LogsRequest) (*StepLog, err
 	if tailLines <= 0 || tailLines > maxLogTailLines {
 		tailLines = maxLogTailLines
 	}
-	lines, totalLines, err := readLogTail(ctx, file, tailLines)
+	lines, totalLines, lineTruncated, err := readLogTail(ctx, file, tailLines)
 	if err != nil {
 		return nil, fmt.Errorf("read log: %w", err)
 	}
 	out.TotalLines = totalLines
 	out.Lines = lines
-	out.Truncated = totalLines > len(lines)
+	out.Truncated = lineTruncated || totalLines > len(lines)
 	return out, nil
 }
 
-func readLogTail(ctx context.Context, file *os.File, tailLines int) ([]string, int, error) {
-	reader := bufio.NewReader(file)
-	lines := make([]string, 0, tailLines)
+func readLogTail(ctx context.Context, file *os.File, tailLines int) ([]string, int, bool, error) {
+	const (
+		readerBufferSize = 32 * 1024
+		maxLogLineBytes  = 64 * 1024
+	)
+	reader := bufio.NewReaderSize(file, readerBufferSize)
+	lineRing := make([]string, tailLines)
+	lineCount := 0
+	lineNext := 0
 	totalLines := 0
 	var pending string
 	hasPending := false
 	pendingTerminated := false
+	pendingEmpty := 0
+	truncated := false
+	line := make([]byte, 0, maxLogLineBytes)
+	lineTruncated := false
 
 	addLine := func(line string) {
 		totalLines++
-		if len(lines) < tailLines {
-			lines = append(lines, line)
-			return
+		lineRing[lineNext] = line
+		lineNext = (lineNext + 1) % tailLines
+		if lineCount < tailLines {
+			lineCount++
 		}
-		copy(lines, lines[1:])
-		lines[len(lines)-1] = line
+	}
+	finishLine := func(terminated bool) {
+		if hasPending {
+			if pending == "" && pendingTerminated {
+				if len(line) == 0 && terminated {
+					pendingEmpty++
+				} else {
+					for i := 0; i < pendingEmpty+1; i++ {
+						addLine("")
+					}
+					pendingEmpty = 0
+				}
+			} else {
+				for i := 0; i < pendingEmpty; i++ {
+					addLine("")
+				}
+				pendingEmpty = 0
+				addLine(pending)
+			}
+		}
+		pending = string(line)
+		hasPending = true
+		pendingTerminated = terminated
+		truncated = truncated || lineTruncated
+		line = line[:0]
+		lineTruncated = false
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, 0, ctx.Err()
+			return nil, 0, false, ctx.Err()
 		default:
 		}
 
-		chunk, err := reader.ReadString('\n')
+		chunk, err := reader.ReadSlice('\n')
 		if len(chunk) > 0 {
-			line := strings.TrimSuffix(chunk, "\n")
-			if hasPending {
-				addLine(pending)
+			terminated := bytes.HasSuffix(chunk, []byte{'\n'})
+			if terminated {
+				chunk = chunk[:len(chunk)-1]
 			}
-			pending = line
-			hasPending = true
-			pendingTerminated = strings.HasSuffix(chunk, "\n")
+			if len(line) < maxLogLineBytes {
+				keep := maxLogLineBytes - len(line)
+				if keep > len(chunk) {
+					keep = len(chunk)
+				}
+				line = append(line, chunk[:keep]...)
+				if keep < len(chunk) {
+					lineTruncated = true
+				}
+			} else if len(chunk) > 0 {
+				lineTruncated = true
+			}
+			if terminated {
+				finishLine(true)
+			}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				return nil, 0, err
+				if !errors.Is(err, bufio.ErrBufferFull) {
+					return nil, 0, false, err
+				}
+				continue
+			}
+			if len(line) > 0 {
+				finishLine(false)
 			}
 			if hasPending && (!pendingTerminated || pending != "") {
+				for i := 0; i < pendingEmpty; i++ {
+					addLine("")
+				}
 				addLine(pending)
 			}
 			break
 		}
 	}
 
-	return lines, totalLines, nil
+	lines := make([]string, lineCount)
+	start := 0
+	if totalLines > lineCount {
+		start = lineNext
+	}
+	for i := range lines {
+		lines[i] = lineRing[(start+i)%tailLines]
+	}
+	return lines, totalLines, truncated, nil
 }
 
 func validStep(step types.StepName) bool {

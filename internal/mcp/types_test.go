@@ -200,6 +200,22 @@ func TestReceiptWaitElapsedIsNotAFailure(t *testing.T) {
 	}
 }
 
+func TestReceiptWaitElapsedPreservesSettledState(t *testing.T) {
+	for name, state := range map[string]*axiapi.RunState{
+		"terminal": {RunID: "01ABC", Terminal: true, Outcome: StatePassed, WaitElapsed: true},
+		"ci ready": {RunID: "01ABC", CIReady: true, WaitElapsed: true},
+		"gate":     {RunID: "01ABC", Gate: &axiapi.Gate{Step: "test"}, WaitElapsed: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := decode(t, NewReceipt(OpRun, "/repos/x", state))
+			next, _ := got["next_action"].(map[string]any)
+			if next != nil && next["code"] == "reattach" {
+				t.Fatalf("next_action = %v, want settled action", got["next_action"])
+			}
+		})
+	}
+}
+
 func TestErrorReceiptIsTypedAndActionable(t *testing.T) {
 	got := decode(t, NewErrorReceipt(OpRun, "/repos/x", &PolicyError{
 		Code: CodeRepoNotAllowed, Message: "outside", Remediation: "add the root",

@@ -211,11 +211,22 @@ func (s *Service) Respond(ctx context.Context, in RespondInput) *Receipt {
 		}
 		return receipt
 	}
+	wait := boundedWait(in.WaitSeconds)
+	if deadline, ok := requestCtx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < wait {
+			wait = remaining
+		}
+		if wait <= 0 {
+			wait = time.Nanosecond
+		}
+	}
 	next, err := s.AXI.Respond(ctx, axiapi.RespondRequest{
 		RepoPath: repoPath, RunID: state.RunID, Action: action,
 		FindingIDs: in.FindingIDs, Instructions: in.Instructions,
 		UserDecisionGiven: strings.TrimSpace(in.UserDecision) != "",
-		Wait:              boundedWait(in.WaitSeconds),
+		ApprovalReason:    in.UserDecision,
+		Wait:              wait,
 	})
 	if err != nil {
 		return s.fail(OpRespond, repoPath, err)

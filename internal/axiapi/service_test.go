@@ -35,6 +35,30 @@ func TestEnsureDaemonContextHonorsCallerDeadline(t *testing.T) {
 	}
 }
 
+func TestReadLogTailBoundsLinesAndTrimsTrailingBlankRows(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "step.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(strings.Repeat("x", 128*1024) + "\n\n\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	lines, total, truncated, err := readLogTail(context.Background(), file, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(lines) != 1 || !truncated {
+		t.Fatalf("lines=%d total=%d truncated=%v, want one bounded truncated line", len(lines), total, truncated)
+	}
+	if len(lines[0]) > 64*1024 {
+		t.Fatalf("retained line length=%d, want bounded", len(lines[0]))
+	}
+}
+
 func gitRun(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

@@ -511,6 +511,9 @@ func TestRespondForwardsTheDecisionFlagToAXI(t *testing.T) {
 	if !axi.respondCalls[1].UserDecisionGiven {
 		t.Error("a supplied decision did not reach AXI")
 	}
+	if got := axi.respondCalls[1].ApprovalReason; got != "the maintainer said yes" {
+		t.Errorf("approval reason = %q, want the human decision", got)
+	}
 }
 
 // TestAXIUserDecisionRefusalStaysTyped pins that a refusal raised against the
