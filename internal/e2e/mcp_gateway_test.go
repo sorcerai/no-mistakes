@@ -15,6 +15,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -65,6 +66,39 @@ func mcpScenario(t *testing.T) string {
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write mcp scenario: %v", err)
+	}
+	return path
+}
+
+func mcpTestExceptionScenario(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "mcp-test-exception.yaml")
+	content := `actions:
+  - match: "You are validating a code change by driving the product itself."
+    text: "the live surface is inconclusive"
+    structured:
+      findings: []
+      summary: "the live surface is inconclusive"
+      tested: ["fakeagent: simulated scenario"]
+      testing_summary: "the scenario could not be driven"
+      artifacts: []
+      verdict: inconclusive
+      scenarios:
+        - name: "fakeagent: simulated scenario"
+          result: untested
+          live: false
+          evidence: "fakeagent: not driven"
+          reason: "the fixture has no live surface"
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "synthetic clean response"
+      risk_scope: source-or-external
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write mcp test exception scenario: %v", err)
 	}
 	return path
 }
@@ -407,6 +441,84 @@ func TestMCPGatewayJourney(t *testing.T) {
 			_ = os.WriteFile(filepath.Join(dir, "scenario-e2e-delivery-journey.json"), data, 0o644)
 		}
 	}
+}
+
+// TestMCPGatewayTestApprovalException proves the MCP approval reason is
+// consumed by the real daemon and survives a fresh status read, rather than
+// merely being echoed by a forwarding mock.
+func TestMCPGatewayTestApprovalException(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: mcpTestExceptionScenario(t)})
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	branch := "feature/mcp-test-exception"
+	h.CommitChange(branch, "feature.txt", "gateway test exception\n", "add gateway test exception")
+	worktree := h.AddWorktree(branch)
+	allowMCPRoots(t, h, filepath.Dir(worktree))
+
+	session := startMCPSession(t, h, h.WorkDir)
+	defer session.Close()
+	run := mcpCall(t, session, "nomistakes_run", map[string]any{
+		"repo_path": worktree, "intent": mcpIntent, "skip": []any{"pr", "ci"}, "wait_seconds": 180,
+	})
+	if run["state"] != "awaiting_decision" || run["step"] != string(types.StepTest) {
+		t.Fatalf("run did not park at Test approval: %#v", run)
+	}
+	runID, _ := run["run_id"].(string)
+	reason := "The maintainer accepted the inconclusive live result for this test."
+	done := mcpCall(t, session, "nomistakes_respond", map[string]any{
+		"repo_path": worktree, "run_id": runID, "action": "approve", "user_decision": reason, "wait_seconds": 180,
+	})
+	if done["ok"] != true || done["state"] != "passed-with-override" {
+		t.Fatalf("approval did not produce passed-with-override: %#v", done)
+	}
+	status := mcpCall(t, session, "nomistakes_status", map[string]any{"repo_path": worktree, "run_id": runID})
+	if status["state"] != "passed-with-override" || !strings.Contains(fmt.Sprint(status["warnings"]), reason) {
+		t.Fatalf("durable status lost the Test approval reason: %#v", status)
+	}
+
+	logPath := filepath.Join(h.NMHome, "logs", runID, "test.log")
+	giant := strings.Repeat("x", 128*1024) + "\n\n\n"
+	if err := os.WriteFile(logPath, []byte(giant), 0o644); err != nil {
+		t.Fatalf("write giant fixture log: %v", err)
+	}
+	logs := mcpCall(t, session, "nomistakes_logs", map[string]any{
+		"repo_path": worktree, "run_id": runID, "step": "test", "tail_lines": 500,
+	})
+	data, _ := logs["data"].(map[string]any)
+	lines, _ := data["lines"].([]any)
+	if data["total_lines"] != float64(1) || data["truncated"] != true || len(lines) != 1 || len(fmt.Sprint(lines[0])) > 64*1024 {
+		t.Fatalf("giant log receipt = %#v, want one bounded truncated line", data)
+	}
+	if err := os.WriteFile(logPath, []byte("\n\n\n"), 0o644); err != nil {
+		t.Fatalf("write blank fixture log: %v", err)
+	}
+	blank := mcpCall(t, session, "nomistakes_logs", map[string]any{
+		"repo_path": worktree, "run_id": runID, "step": "test", "tail_lines": 500,
+	})
+	blankData, _ := blank["data"].(map[string]any)
+	if blankData["total_lines"] != float64(0) || blankData["truncated"] != false {
+		t.Fatalf("blank log receipt = %#v, want zero lines", blankData)
+	}
+
+	database, err := db.OpenReadOnly(filepath.Join(h.NMHome, "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	steps, err := database.GetStepsByRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepTest {
+			if step.ApprovalReason == nil || *step.ApprovalReason != reason {
+				t.Fatalf("persisted Test approval reason = %v, want %q", step.ApprovalReason, reason)
+			}
+			return
+		}
+	}
+	t.Fatal("persisted Test step not found")
 }
 
 // assertIntentReachedAgent proves the caller's own intent text was handed to

@@ -201,16 +201,26 @@ func TestReceiptWaitElapsedIsNotAFailure(t *testing.T) {
 }
 
 func TestReceiptWaitElapsedPreservesSettledState(t *testing.T) {
-	for name, state := range map[string]*axiapi.RunState{
-		"terminal": {RunID: "01ABC", Terminal: true, Outcome: StatePassed, WaitElapsed: true},
-		"ci ready": {RunID: "01ABC", CIReady: true, WaitElapsed: true},
-		"gate":     {RunID: "01ABC", Gate: &axiapi.Gate{Step: "test"}, WaitElapsed: true},
+	for name, tc := range map[string]struct {
+		state             *axiapi.RunState
+		wantState, wantNext string
+	}{
+		"terminal": {state: &axiapi.RunState{RunID: "01ABC", Terminal: true, Outcome: StatePassed, WaitElapsed: true}, wantState: StatePassed},
+		"ci ready": {state: &axiapi.RunState{RunID: "01ABC", CIReady: true, WaitElapsed: true}, wantState: StateChecksPassed, wantNext: "await_human_merge"},
+		"gate": {state: &axiapi.RunState{RunID: "01ABC", Gate: &axiapi.Gate{Step: "test"}, WaitElapsed: true}, wantState: StateAwaitingDecision, wantNext: "respond"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := decode(t, NewReceipt(OpRun, "/repos/x", state))
+			got := decode(t, NewReceipt(OpRun, "/repos/x", tc.state))
+			if got["state"] != tc.wantState {
+				t.Fatalf("state = %v, want %q", got["state"], tc.wantState)
+			}
 			next, _ := got["next_action"].(map[string]any)
-			if next != nil && next["code"] == "reattach" {
-				t.Fatalf("next_action = %v, want settled action", got["next_action"])
+			if tc.wantNext == "" {
+				if next != nil {
+					t.Fatalf("next_action = %v, want none", got["next_action"])
+				}
+			} else if next == nil || next["code"] != tc.wantNext {
+				t.Fatalf("next_action = %v, want %q", got["next_action"], tc.wantNext)
 			}
 		})
 	}

@@ -488,51 +488,6 @@ func TestSyncRejectsContradictoryRequests(t *testing.T) {
 	}
 }
 
-// TestRespondForwardsTheDecisionFlagToAXI pins that the boundary enforcing the
-// ask-user refusal against the live gate is told whether a human decided.
-func TestRespondForwardsTheDecisionFlagToAXI(t *testing.T) {
-	gate := &axiapi.Gate{Step: "review", Findings: []types.Finding{{ID: "r1", Action: types.ActionAutoFix, Description: "x"}}}
-	axi := &fakeAXI{
-		status:  &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA, Gate: gate},
-		respond: &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA, Status: string(types.RunRunning)},
-	}
-	svc, repo := newService(t, axi)
-	if got := svc.Respond(context.Background(), RespondInput{RepoPath: repo, Action: "approve"}); !got.OK {
-		t.Fatalf("receipt = %#v", got)
-	}
-	if axi.respondCalls[0].UserDecisionGiven {
-		t.Error("no decision was supplied, but the flag was set")
-	}
-
-	svc2, repo2 := newService(t, axi)
-	if got := svc2.Respond(context.Background(), RespondInput{RepoPath: repo2, Action: "approve", UserDecision: "the maintainer said yes"}); !got.OK {
-		t.Fatalf("receipt = %#v", got)
-	}
-	if !axi.respondCalls[1].UserDecisionGiven {
-		t.Error("a supplied decision did not reach AXI")
-	}
-	if got := axi.respondCalls[1].ApprovalReason; got != "" {
-		t.Errorf("review approval reason = %q, want empty", got)
-	}
-}
-
-func TestRespondForwardsApprovalReasonOnlyForTestApproval(t *testing.T) {
-	axi := &fakeAXI{
-		status: &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA, Gate: &axiapi.Gate{Step: string(types.StepTest)}},
-		respond: &axiapi.RunState{RunID: "01ABC", HeadSHA: fullSHA, Status: string(types.RunRunning)},
-	}
-	svc, repo := newService(t, axi)
-	got := svc.Respond(context.Background(), RespondInput{
-		RepoPath: repo, Action: "approve", UserDecision: "accepted the inconclusive live result",
-	})
-	if !got.OK {
-		t.Fatalf("receipt = %#v", got)
-	}
-	if got := axi.respondCalls[0].ApprovalReason; got != "accepted the inconclusive live result" {
-		t.Errorf("Test approval reason = %q, want the human decision", got)
-	}
-}
-
 // TestAXIUserDecisionRefusalStaysTyped pins that a refusal raised against the
 // live gate - the run advanced into an ask-user gate after this layer read it -
 // still reaches the caller as the decision-required error, not an opaque one.
