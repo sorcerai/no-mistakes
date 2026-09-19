@@ -214,14 +214,21 @@ Three of these are easy to conflate and must not be:
 `head_sha` is always the full 40-character commit. An abbreviated SHA cannot be
 compared against a forge, which makes it useless as evidence.
 
+When a human approves a Test exception, the gateway passes the supplied
+`user_decision` text through as the recorded approval reason. The resulting
+`passed-with-override` receipt preserves that reason in `warnings`, including
+if the run later reaches CI readiness.
+
 ### Bounded waits
 
 `nomistakes_run` and `nomistakes_respond` accept `wait_seconds` (default eight
-minutes, capped at thirty) so a call returns before your own tool budget
-expires. When that wait
-elapses the run keeps going: the receipt reports `running`, warns that the hold
-ended, and sets `next_action.code` to `reattach`. It is not a failure and not a
-terminal state.
+minutes, capped at thirty minutes) so a call returns before your own tool
+budget expires. When that wait elapses while the run is still in flight, the
+receipt reports `running`, warns that the hold ended, and sets
+`next_action.code` to `reattach`. If the daemon settled the run during the
+bounded wait - at a gate, terminal outcome, or CI-ready state - the receipt
+preserves that settled state and its next action instead. A bounded wait is
+never itself a failure or a terminal state.
 
 ## The agent loop
 
