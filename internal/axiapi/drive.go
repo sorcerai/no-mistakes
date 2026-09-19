@@ -278,7 +278,6 @@ func waitForTriggeredRun(ctx context.Context, client *ipc.Client, repoID, branch
 				if _, existed := priorRunIDs[run.ID]; !existed {
 					return run, nil
 				}
-				break
 			}
 		}
 		select {

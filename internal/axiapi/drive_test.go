@@ -55,6 +55,53 @@ func TestWaitForTriggeredRunPropagatesIPCError(t *testing.T) {
 	}
 }
 
+func TestWaitForTriggeredRunFindsNewRunAfterPriorRun(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ax-trigger-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "ipc.sock")
+	srv := ipc.NewServer()
+	srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.GetActiveRunResult{}, nil
+	})
+	srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.GetRunsResult{Runs: []ipc.RunInfo{
+			{ID: "prior", HeadSHA: "head"},
+			{ID: "new", HeadSHA: "head"},
+		}}, nil
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(sock) }()
+	t.Cleanup(func() {
+		srv.Close()
+		<-errCh
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		client, err := ipc.Dial(sock)
+		if err == nil {
+			client.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	client, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	run, err := waitForTriggeredRun(context.Background(), client, "repo", "branch", "head", map[string]struct{}{"prior": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || run.ID != "new" {
+		t.Fatalf("run = %#v, want new run", run)
+	}
+}
+
 func TestWaitForTriggeredRunReturnsCallerDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
