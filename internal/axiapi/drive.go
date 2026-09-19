@@ -207,7 +207,7 @@ func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest
 	}
 	run, waitErr := waitForTriggeredRun(ctx, e.client, e.repo.ID, branch, submissionHead, priorRunIDs)
 	if waitErr != nil {
-		return "", fmt.Errorf("wait for triggered run: %w", waitErr)
+		return "", triggerWaitFailure(branch, pushErr, waitErr)
 	}
 	if run != nil {
 		return run.ID, nil
@@ -228,6 +228,13 @@ func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest
 		return "", fmt.Errorf("no run started for %q: %w", branch, err)
 	}
 	return rr.RunID, nil
+}
+
+func triggerWaitFailure(branch string, pushErr, waitErr error) error {
+	if pushErr != nil {
+		return fmt.Errorf("push %q to gate: %v; wait for triggered run: %w", branch, pushErr, waitErr)
+	}
+	return fmt.Errorf("wait for triggered run: %w", waitErr)
 }
 
 func runIDsForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string) (map[string]struct{}, error) {

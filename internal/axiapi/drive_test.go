@@ -55,6 +55,22 @@ func TestWaitForTriggeredRunPropagatesIPCError(t *testing.T) {
 	}
 }
 
+func TestTriggerWaitFailurePreservesPushAndPollErrors(t *testing.T) {
+	pushErr := errors.New("rejected by gate")
+	waitErr := errors.New("daemon unavailable")
+
+	err := triggerWaitFailure("feature/probe", pushErr, waitErr)
+	if !strings.Contains(err.Error(), `push "feature/probe" to gate: rejected by gate`) {
+		t.Fatalf("error = %q, want push failure", err)
+	}
+	if !strings.Contains(err.Error(), "wait for triggered run: daemon unavailable") {
+		t.Fatalf("error = %q, want poll failure", err)
+	}
+	if !errors.Is(err, waitErr) {
+		t.Fatalf("error = %v, want wrapped poll failure", err)
+	}
+}
+
 func TestWaitForTriggeredRunFindsNewRunAfterPriorRun(t *testing.T) {
 	dir, err := os.MkdirTemp("", "ax-trigger-")
 	if err != nil {
