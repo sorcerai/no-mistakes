@@ -1371,6 +1371,56 @@ func TestFetchFailedCheckLogsSelectsMatchingRunForHeadSHA(t *testing.T) {
 	}
 }
 
+func TestFetchFailedCheckTargetLogsSelectsProviderIdentityOverName(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {
+			stdout: `[{"databaseId":102,"name":"CI"}]` + "\n",
+		},
+		"gh run view 102 --json jobs":     {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"},{"databaseId":202,"name":"build","conclusion":"failure"}]}` + "\n"},
+		"gh run view 102 --job 202 --log": {stdout: "selected build failed\n"},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{Name: "build", ProviderID: "github-check-run:202"}})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckTargetLogs() error = %v", err)
+	}
+	if len(logs) != 1 || logs[0].Output != "selected build failed" {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %+v, want selected check's logs", logs)
+	}
+}
+
+func TestFetchFailedCheckTargetLogsReturnsPartialLogsWithRetrievalError(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {stdout: `[{"databaseId":102,"name":"CI"}]` + "\n"},
+		"gh run view 102 --json jobs":     {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"},{"databaseId":202,"name":"lint","conclusion":"failure"}]}` + "\n"},
+		"gh run view 102 --job 201 --log": {stdout: "build failed\n"},
+		"gh run view 102 --job 202 --log": {stderr: "expired", code: 1},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{ProviderID: "github-check-run:201"}, {ProviderID: "github-check-run:202"}})
+	if err != nil || len(logs) != 2 || logs[0].Output != "build failed" || logs[1].Err == nil || !strings.Contains(logs[1].Err.Error(), "job 202") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want retained partial logs and job 202 error", logs, err)
+	}
+}
+
+func TestFetchFailedCheckTargetLogsReportsMissingSelectedJob(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {stdout: `[{"databaseId":102,"name":"CI"}]` + "\n"},
+		"gh run view 102 --json jobs": {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"}]}` + "\n"},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{ProviderID: "github-check-run:999"}})
+	if err != nil || len(logs) != 1 || logs[0].Err == nil || !strings.Contains(logs[0].Err.Error(), "github-check-run:999") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want explicit missing-target error", logs, err)
+	}
+}
+
 // A GitHub Actions action-download outage fails a job inside "Set up job",
 // before any repository step runs. PreRunFailures must flag exactly that job -
 // read structurally from the setup step's conclusion, never from log text - and
@@ -1923,5 +1973,27 @@ func TestHost_GetReviewComments(t *testing.T) {
 	}
 	if comments[1].ID != "12346" || comments[1].Line != 0 || comments[1].Author != "greptile-apps" {
 		t.Fatalf("unexpected paginated comment: %#v", comments[1])
+	}
+}
+
+func TestGetPRContentRequiresExplicitStrings(t *testing.T) {
+	t.Parallel()
+	for _, payload := range []string{`{}`, `null`, `{"title":"Author"}`, `{"body":"Author text"}`, `{"title":"Author","body":null}`, `{"title":null,"body":"Author text"}`, `{"title":"Author","body":42}`, `{"title":false,"body":"text"}`, `[]`, `{"title":`} {
+		t.Run(payload, func(t *testing.T) {
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr view 42 --repo test/repo --json title,body": {stdout: payload},
+			}), nil, "", "test/repo")
+			got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
+			if err == nil || got != (scm.PRContent{}) {
+				t.Fatalf("invalid response accepted: %+v, %v", got, err)
+			}
+		})
+	}
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json title,body": {stdout: `{"title":"Author title","body":""}`},
+	}), nil, "", "test/repo")
+	got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
+	if err != nil || got.Title != "Author title" || got.Body != "" {
+		t.Fatalf("explicit empty body rejected: %+v, %v", got, err)
 	}
 }

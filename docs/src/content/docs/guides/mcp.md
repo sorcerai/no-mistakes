@@ -196,7 +196,7 @@ A refusal replaces the body with a typed, actionable error:
 | `checks-passed` | CI is green (or the repository's trusted no-CI declaration applies) and the PR is ready for a human to merge. |
 | `passed` | The run completed with every step accounted for. |
 | `passed-with-skips` | The run completed, but publication or CI verification did not run. See `automatic_skips`. |
-| `passed-with-override` | A human approved past a still-failing live check. |
+| `passed-with-override` | A human approved past a live CI failure or accepted a Test exception. |
 | `failed` / `cancelled` / `ci-monitor-interrupted` | The run did not pass. |
 
 Three of these are easy to conflate and must not be:
@@ -207,8 +207,9 @@ Three of these are easy to conflate and must not be:
 - **`passed-with-skips` is not CI-ready.** It means validation the pipeline
   decided to skip did not run, and `automatic_skips` says which steps and why.
   Report the missing evidence; do not report the change as verified.
-- **`passed-with-override`** means a human went past a failing check
-  deliberately. It is a pass with a footnote, not a clean one.
+- **`passed-with-override`** means a human accepted unresolved CI or Test
+  evidence deliberately. The receipt preserves the reason in `warnings`; it
+  is not a clean pass. Test exceptions remain visible even when CI later passes.
 
 `head_sha` is always the full 40-character commit. An abbreviated SHA cannot be
 compared against a forge, which makes it useless as evidence.

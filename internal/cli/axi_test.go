@@ -58,6 +58,7 @@ func TestRunViewFromDBCarriesCIOverrideReason(t *testing.T) {
 	run := &db.Run{ID: "r1", Branch: "feature/x", HeadSHA: "abcdef1234567890", Status: types.RunCompleted}
 	steps := []*db.StepResult{
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted, OverrideReason: strptr("configured test command failed")},
 		{StepName: types.StepCI, Status: types.StepStatusCompleted, OverrideReason: strptr("live checks still failing: required-check")},
 	}
 	rv := runViewFromDB(run, steps, nil)
@@ -342,6 +343,24 @@ func TestFormatParkedFor(t *testing.T) {
 				t.Errorf("formatParkedFor = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGateHelpForUnvalidatedTestWorkDoesNotOfferSkip(t *testing.T) {
+	gate := stepView{
+		Name:   "test",
+		Status: "awaiting_approval",
+		FindingsJSON: findingsJSON(t, []types.Finding{
+			{ID: types.FindingIDTestAgentTimeout, Severity: "warning", Action: types.ActionAskUser, Description: "budget cut"},
+			{ID: types.FindingIDTestAgentUnvalidatedWork, Severity: "error", Action: types.ActionAskUser, Description: "uncommitted changes to fix.txt"},
+		}, "Test agent exceeded its invocation budget"),
+	}
+	out := axiDoc(gateFields(gate)...)
+	if strings.Contains(out, "--action skip") || strings.Contains(out, "--action approve") {
+		t.Fatalf("gate help offers a response that would publish unvalidated work:\n%s", out)
+	}
+	if !strings.Contains(out, "Do not skip this step") || !strings.Contains(out, "--action fix") || !strings.Contains(out, "`no-mistakes axi abort`") {
+		t.Fatalf("gate help missing the skip warning, the fix path, or the real abort command:\n%s", out)
 	}
 }
 

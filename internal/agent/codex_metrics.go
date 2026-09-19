@@ -22,6 +22,9 @@ type codexMetricsAccumulator struct {
 	categories       ToolCategoryCounts
 	subprocessWaitMS int64
 	starts           map[string]time.Time
+	// Parser-local replay evidence, deliberately independent of telemetry's
+	// tool-type classifier so new tool kinds cannot silently permit replay.
+	replayUnsafe bool
 }
 
 func newCodexMetricsAccumulator() *codexMetricsAccumulator {

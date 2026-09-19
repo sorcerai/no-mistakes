@@ -30,7 +30,8 @@ type StepContext struct {
 	Fixing                bool         // true when re-executing after a "fix" action
 	SkipFixExecution      bool         // replay an already-completed fix round's review turn only
 	ReviewStartingHeadSHA string
-	PreviousFindings      string // JSON findings from the previous execution (set during fix loop)
+	PreviousFindings      string // JSON findings selected for the current fix round
+	DeferredFindings      string // JSON findings left unselected when the current fix round began
 	// StepResultID is the DB row ID of the current step's step_results record.
 	// Steps use it to query their own round history for multi-round prompts.
 	StepResultID string
@@ -80,6 +81,14 @@ type StepContext struct {
 	// step in the same run (e.g. the combined document+lint pass).
 	Shared             *RunShared
 	CIReadinessChanged func(ready, declaredNoCI bool)
+	// MarkRunning tells the executor that a step re-executing as a fix round
+	// has finished its repair and is executing normally again, so the step's
+	// status returns from fixing to running before Execute returns. The CI
+	// step needs it: a fix round that publishes a repair keeps monitoring the
+	// pull request afterwards, and both the TUI's active-CI indicator and the
+	// AXI checks-passed outcome read a running status. Nil in embeddings that
+	// never fix.
+	MarkRunning func() error
 	// OnPRMerged is a best-effort hook after a merged PR state is persisted.
 	// Eval uses it to relabel auto-fix/shipped-unfixed gold; nil is a no-op.
 	OnPRMerged func(ctx context.Context, runID string)
@@ -100,20 +109,25 @@ type StepOutcome struct {
 	NeedsApproval bool // whether the step pauses for user action
 	AutoFixable   bool
 	Findings      string // JSON findings for TUI display (optional)
-	ExitCode      int    // process exit code (0 = success)
-	PRURL         string // PR/MR URL if this step created or found one
-	Skipped       bool   // mark the step as skipped without failing the run
-	SkipReason    string // automatic PR/CI skip cause; explicit per-run skips leave it empty
-	SkipRemaining bool   // skip all subsequent steps (e.g. empty diff after rebase)
+	// ReviewedPaths is the review step's agent-reported coverage record for this
+	// round. It is a positive-verification signal only after the executor
+	// intersects it with ReviewablePaths.
+	ReviewedPaths []string
+	// ReviewablePaths is the trusted changed-file set this review round can
+	// certify. It is computed from the diff, not supplied by the agent.
+	ReviewablePaths []string
+	ExitCode        int    // process exit code (0 = success)
+	PRURL           string // PR/MR URL if this step created or found one
+	Skipped         bool   // mark the step as skipped without failing the run
+	SkipReason      string // automatic PR/CI skip cause; explicit per-run skips leave it empty
+	SkipRemaining   bool   // skip all subsequent steps (e.g. empty diff after rebase)
 	// RestartFrom asks the executor to re-run validation from this earlier step.
 	// CI repairs use it when policy requires revalidation or continuity cannot be
 	// proven, sending the new local head back through review before push.
 	RestartFrom types.StepName
-	// FixSummary, when non-empty, is the agent's one-line commit summary for
-	// the fix attempt performed during this round. Steps populate it in fix
-	// mode so the executor can persist it on the round record and later
-	// rounds can reference what was previously attempted.
-	FixSummary string
+	// FixSummary, when non-empty, records the result of a fix attempt.
+	FixSummary      string
+	RepairPublished bool
 	// ReviewApprovedHeadSHA is set only by a successfully executed full review
 	// round. The executor durably records it only when the review step actually
 	// completes, never while that outcome is parked or after a failed round.
@@ -127,7 +141,7 @@ type StepOutcome struct {
 
 // Step is the interface that each pipeline step implements.
 type Step interface {
-	// Name returns the step's identity in the fixed pipeline sequence.
+	// Name returns the step's identity in the run's pipeline sequence.
 	Name() types.StepName
 
 	// Execute runs the step logic and returns an outcome.
@@ -145,23 +159,22 @@ type ApprovalGateReconciler interface {
 	ReconcileApprovalGate(sctx *StepContext) (resolved bool, err error)
 }
 
-// ApprovalOverrideVerifier is implemented by a step whose approval gate exists
-// because of a live, re-checkable external condition (currently: the CI
-// step's failing checks). The executor calls it once, synchronously, at the
-// moment a human answers ActionApprove - never for Skip, Abort, or Fix, which
-// do not claim the step passed. A human's approval always proceeds (this
-// never blocks a deliberate operator decision), but when the condition is
-// still unresolved the executor records the completion as an explicit
-// override (StepResult.OverrideReason, via db.SetStepOverrideReason) instead
-// of silently reporting the same "outcome=passed" a genuinely green run
-// produces. See docs/... incident: an operator approved a CI gate while a
-// stale, already-superseded check-run replay still showed a live failure, and
-// the run reported outcome=passed with no trace of the override.
+// ApprovalOverrideVerifier is implemented by a step whose approval must not
+// erase the condition that caused its gate (currently: the CI step's live
+// failing checks, and the Test step's persisted failing commands.test result).
+// The executor calls it once, synchronously, when a human answers
+// ActionApprove - never for Skip, Abort, or Fix, which do not claim the step
+// passed. A human's approval always proceeds (this never blocks a deliberate
+// operator decision), but when the verifier returns a reason the executor
+// records the completion as an explicit override (StepResult.OverrideReason,
+// via db.SetStepOverrideReason) instead of making it indistinguishable from a
+// genuinely green completion. CI re-checks its live condition; Test reads the
+// command result persisted when its gate parked rather than re-running it.
 //
 // unresolved is a short human-readable reason (e.g. naming the still-failing
-// check) when the condition has not cleared, and "" when it has (the executor
-// then records a plain, unqualified completion exactly as before). err is
-// reserved for a verification failure distinct from "still unresolved" (e.g.
+// check or failed configured test command), and "" means the completion needs
+// no override marker. err is reserved for a verification failure distinct
+// from "still unresolved" (e.g.
 // the provider could not be reached); implementations should fail closed by
 // treating err as if it were an unresolved condition described by err, and
 // callers do the same rather than silently completing on error, but the

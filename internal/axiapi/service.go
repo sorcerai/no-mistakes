@@ -106,13 +106,16 @@ type RunState struct {
 	Branch   string
 	// HeadSHA is always the full 40-character commit, never abbreviated: a
 	// machine receipt that cannot be compared to a forge SHA is not evidence.
-	HeadSHA          string
-	Status           string
-	Outcome          string
-	PRURL            string
-	RunError         string
-	CIOverrideReason string
-	Terminal         bool
+	HeadSHA  string
+	Status   string
+	Outcome  string
+	PRURL    string
+	RunError string
+	// CIOverrideReason and TestOverrideReason distinguish deliberate
+	// approvals from a genuinely green run.
+	CIOverrideReason   string
+	TestOverrideReason string
+	Terminal           bool
 	// CIReady is the checks-passed handoff: CI is monitoring and the daemon
 	// persisted readiness. It is never inferred from any other state.
 	CIReady bool
@@ -462,9 +465,12 @@ func stateFromDB(run *db.Run, steps []*db.StepResult) *RunState {
 			step.SkipReason = *s.SkipReason
 		}
 		state.Steps = append(state.Steps, step)
-		// Mirror the executor: a run's override reason is the first step that
-		// recorded one, so a deliberate override never reads as a clean pass.
-		if state.CIOverrideReason == "" && s.OverrideReason != nil && *s.OverrideReason != "" {
+		if reason := s.TestOverrideReason(); reason != "" {
+			state.TestOverrideReason = reason
+		}
+		// The CI override is step-specific. A Test exception must not be
+		// mistaken for a live-check override.
+		if s.StepName == types.StepCI && state.CIOverrideReason == "" && s.OverrideReason != nil && *s.OverrideReason != "" {
 			state.CIOverrideReason = *s.OverrideReason
 		}
 		if state.Gate == nil && isGateStatus(string(s.Status)) {
@@ -482,11 +488,12 @@ func stateFromDB(run *db.Run, steps []*db.StepResult) *RunState {
 // stateFromIPC projects a live daemon run snapshot onto the typed snapshot.
 func stateFromIPC(run *ipc.RunInfo) *RunState {
 	state := &RunState{
-		RunID:            run.ID,
-		Branch:           run.Branch,
-		HeadSHA:          run.HeadSHA,
-		Status:           string(run.Status),
-		CIOverrideReason: run.CIOverrideReason,
+		RunID:              run.ID,
+		Branch:             run.Branch,
+		HeadSHA:            run.HeadSHA,
+		Status:             string(run.Status),
+		CIOverrideReason:   run.CIOverrideReason,
+		TestOverrideReason: run.TestOverrideReason,
 	}
 	if run.PRURL != nil {
 		state.PRURL = *run.PRURL
@@ -516,7 +523,7 @@ func finish(state *RunState, ciReady, ciReadyNoCI bool) {
 	state.AutomaticSkips = AutomaticSkips(state.Steps)
 	state.Terminal = TerminalStatus(state.Status)
 	if state.Terminal {
-		state.Outcome = Outcome(state.Status, state.CIOverrideReason, state.AutomaticSkips)
+		state.Outcome = Outcome(state.Status, state.CIOverrideReason, state.AutomaticSkips, state.TestOverrideReason)
 	}
 	state.CIReady = CIReadyToMerge(state.Steps, ciReady, ciReadyNoCI)
 }

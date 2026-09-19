@@ -22,6 +22,7 @@ Pipeline agent prompts also include a workspace-boundary preamble and an executi
 It tells agents to keep intentional source, project, user-data, and system file writes inside the disposable worktree, use that exact path prefix when tools require absolute paths without guessing or re-resolving paths, avoid mutating system state such as Homebrew packages, `/Applications`, or global tool config, and treat that boundary as prompt steering rather than true enforcement.
 The only intentional out-of-worktree write it allows is test evidence under the run's managed evidence directory when a testing prompt asks for it.
 Incidental temp or cache writes from normal development tools are still allowed.
+The same preamble bounds the read side: agents may read outside the worktree and run read-only commands, but must not run filesystem-wide searches such as `find /` or `mdfind /`, and must not hunt the host filesystem for an installed tool. When a needed tool is not on `PATH` and no repository-local path is supplied, they report the missing tool and the work it blocked in their normal result rather than searching the machine; the Test step reports the affected scenario untested with that reason.
 Testing prompts also ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before reporting completion.
 
 ## How to choose quickly
@@ -119,6 +120,8 @@ agent: [codex, grok]
 If you install `acpx` separately, you can opt into any ACP target with the `acp:` prefix, for example `agent: acp:gemini`.
 `agent: auto` probes native agents and first-class ACP aliases (such as `cursor`), and never auto-selects arbitrary `acp:<target>` entries.
 
+`acp:omp` (Oh My Pi over ACP) is additionally a verified gate agent under [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings): its default launch neutralizes the target repository's context files, rules, skills, and extensions. See that reference entry for the exact mechanism and the override that fails closed.
+
 The [`agent` field reference](/no-mistakes/reference/global-config/#agent) owns the exact resolution order, fallback-list filtering and retry semantics, and the failure behavior when no entry is runnable.
 
 ## Where agent choice matters most
@@ -193,7 +196,7 @@ If native agent discovery does not resolve the binary you expect, check `~/.no-m
 Six global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
 
 - [`agent_path_override`](/no-mistakes/reference/global-config/#agent_path_override) - custom binary paths per native agent, plus the default native binary-name table.
-- [`agent_config`](/no-mistakes/reference/global-config/#agent_config) - model and reasoning effort per agent in one common spelling, mapped down to each harness's own mechanism, with the full per-harness mapping table and the precedence rule against raw flags.
+- [`agent_config`](/no-mistakes/reference/global-config/#agent_config) - model and reasoning effort per agent in one common spelling, mapped down to each harness's own mechanism, with the full per-harness mapping table and the precedence rule against raw flags. Opt-in [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) pin those knobs for one validation run.
 - [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) - extra CLI flags per native agent for anything `agent_config` does not cover, such as service tier or permission mode, including the reserved-flag rules and smart defaults. Keep both global-only; they reflect your local agent setup rather than repo policy.
 - [`acpx_path`](/no-mistakes/reference/global-config/#acpx_path) - the bridge binary path for explicit ACP targets and first-class ACP aliases.
 - [`acp_registry_overrides`](/no-mistakes/reference/global-config/#acp_registry_overrides) - raw ACP target commands, including replacements for alias defaults such as `cursor-agent acp`, plus their availability-probing rules.
@@ -226,21 +229,21 @@ Each invocation returns:
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
 
-When structured output comes from final text, no-mistakes validates JSON fences and concluding bare JSON objects extracted from prose against the requested schema. It accepts inline or unclosed JSON fence forms, but rejects multiple valid candidates and fails closed when fenced and bare candidates differ; semantically identical fenced and bare candidates are accepted. A bare object followed by substantive prose is not treated as a verdict.
+When structured output comes from final text, no-mistakes validates JSON fences and concluding bare JSON objects extracted from prose against the requested schema. It accepts inline or unclosed JSON fence forms, but rejects multiple valid candidates and fails closed when fenced and bare candidates differ; semantically identical fenced and bare candidates are accepted. A bare object followed by substantive prose is not treated as a verdict, while trailing provider tool-protocol residue after a complete object - markup whose tags wrap no words, or punctuation alone, never prose or markup around real words - is. When a model splits one answer across adjacent bare objects - separated by nothing but whitespace or a single comma - the merged object is accepted only when their keys are disjoint and the union validates, so two competing verdicts are never combined; a concluding split with disjoint keys whose union still does not validate fails with its own dedicated error rather than a generic schema error, while a run that repeats a top-level key is competing values and stays terminal. Two bare objects that each validate on their own remain a terminal ambiguity for the standard adapters; ACP targets are the one exception, keeping the last valid bare object instead of failing (see the ACP aliases below).
 
 One-shot subprocess agents (Claude, Codex, Grok, Pi, Copilot CLI, Antigravity, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
 
-Transient API and network failures, stochastic prose turn endings, and transient tool-call or permission validation errors are retried up to three times with exponential backoff. Provider quota and free-usage-limit errors are terminal, even when a backend marks them retryable. Retry messages are recorded as lifecycle activity for native subprocess agents, falling back to the streaming text path for direct callers that do not supply `OnLifecycle`.
+Transient API and network failures, stochastic prose turn endings, transient tool-call or permission validation errors, and final-text parse failures whose remedy is a fresh turn (provider protocol residue after a complete object, or a split answer the parser could not fuse) are retried up to three times with exponential backoff. Provider quota and free-usage-limit errors are terminal, even when a backend marks them retryable. Retry messages are recorded as lifecycle activity for native subprocess agents, falling back to the streaming text path for direct callers that do not supply `OnLifecycle`.
 
 ## Intent extraction
 
 When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim as authoritative acceptance criteria and skips transcript-based inference, even if `intent.enabled` is false.
 Review checks the diff against those criteria, and a change that removes required behavior or adds forbidden behavior becomes an `ask-user` finding instead of being resolved automatically.
 Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, and the GitHub Copilot CLI during the `intent` pipeline step.
-It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, includes that summary as an untrusted, low-confidence hint in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts, and renders it in generated PR descriptions.
+It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, and includes that summary as an untrusted, low-confidence hint in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts. Publication of the generated Intent section is controlled by [`pr.publish_intent`](/no-mistakes/reference/repo-config/#prpublish_intent).
 
 Transcript readers collect user and assistant text messages but exclude tool call output.
 They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, Pi transcripts from `~/.pi/agent/sessions`, and GitHub Copilot CLI sessions from `~/.copilot/session-state`.
@@ -291,7 +294,7 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 ## Pi
 
 Spawns a `pi` subprocess for each invocation with `--mode json`. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns instead create and resume one Pi session per run via `--session <UUID>`.
-Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/global-config/#agent_config), rendered as `--model` and `--thinking`. See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Pi override precedence.
+Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/global-config/#agent_config) unless the run has an opt-in [per-run Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles). Native mapping is `--model` and `--thinking`.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
 

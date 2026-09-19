@@ -12,6 +12,20 @@ import (
 // Those out-of-tree writes are what trigger macOS "App Management" / Privacy
 // notifications and risk surprising side effects on the user's machine.
 //
+// The read half of that boundary is deliberately bounded. An agent may still
+// read outside the worktree and run read-only commands, but it must never turn
+// that into a filesystem-wide search of the host. A real Test run spent its
+// entire 30-minute budget on an agent-authored `find / -maxdepth 4` that blocked
+// at 0% CPU in a macOS directory-service automount under /home, so the suite
+// never started; `-maxdepth` (and `-xdev`) do not make a whole-root search
+// bounded on such a host. `find /` and `mdfind /` are therefore named as
+// disallowed, hunting the machine for an installed tool is disallowed, and the
+// missing-tool fallback is explicit: report the missing tool and the work it
+// blocked in the role's normal result, with the concrete reason, instead of
+// searching for it. That fallback stays role-neutral because only the Test step
+// has scenarios and an "untested" state; the Test prompt adds its own
+// scenario-shaped version of the same rule.
+//
 // evidenceRoot is the one out-of-worktree location the preamble permits, and it
 // is supplied by the caller rather than computed here. This used to be a
 // package-level string that rebuilt the evidence path from os.TempDir()
@@ -29,6 +43,8 @@ func WorktreeSteering(evidenceRoot string) string {
 - The only allowed out-of-worktree writes are test evidence files under %s when a testing prompt explicitly asks for them.
 - Ephemeral temp/cache writes that are incidental side effects of running the project development toolchain are allowed outside the worktree for tests, linters, formatters, builds, and manual verification commands.
 - You may read files outside the worktree and run read-only commands, but every other intentional write must stay inside the worktree.
+- Do not search the host filesystem. Never run a filesystem-wide search such as `+"`find /`"+` or `+"`mdfind /`"+`, and never hunt the machine for an installed tool. A `+"`-maxdepth`"+` or `+"`-xdev`"+` flag does not make a whole-root search bounded, so it does not license one. Bounded searches inside the worktree, inside an external evidence path a prompt explicitly names, or inside a repository-local path you were given remain fine.
+- If a tool you need is not on PATH and no repository-local path is supplied, do not search the machine for it: report the missing tool and the work it blocked in your normal result, with the concrete reason, and stop there.
 
 `, location)
 }
@@ -36,13 +52,17 @@ func WorktreeSteering(evidenceRoot string) string {
 // steeredAgent wraps an Agent and prepends the steering preamble to each prompt.
 type steeredAgent struct {
 	Agent
-	preamble string
+	preamble     string
+	evidenceRoot string
 }
 
 // Run prepends the worktree steering preamble before delegating to the
-// wrapped agent. All other RunOpts fields pass through unchanged.
+// wrapped agent and binds the invocation to this run's trusted evidence root.
+// The root is set on every call so caller-provided or prior-run values cannot
+// leak into the current invocation.
 func (s steeredAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	opts.Prompt = s.preamble + opts.Prompt
+	opts.EvidenceDir = s.evidenceRoot
 	return s.Agent.Run(ctx, opts)
 }
 
@@ -73,5 +93,5 @@ func WithSteering(a Agent, evidenceRoot string) Agent {
 	if _, ok := a.(steeredAgent); ok {
 		return a
 	}
-	return steeredAgent{Agent: a, preamble: WorktreeSteering(evidenceRoot)}
+	return steeredAgent{Agent: a, preamble: WorktreeSteering(evidenceRoot), evidenceRoot: evidenceRoot}
 }

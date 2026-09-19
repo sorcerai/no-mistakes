@@ -161,6 +161,10 @@ func NewReceipt(operation, repoPath string, state *axiapi.RunState) *Receipt {
 		r.NextAction = &NextAction{Code: "status"}
 	}
 
+	if state.TestOverrideReason != "" {
+		r.Warnings = append(r.Warnings, "A human approved a Test exception: "+state.TestOverrideReason)
+	}
+
 	if len(r.AutomaticSkips) > 0 {
 		r.Warnings = append(r.Warnings, fmt.Sprintf(
 			"%d validation step(s) did not run; this outcome establishes neither CI readiness nor a code failure. See automatic_skips.",

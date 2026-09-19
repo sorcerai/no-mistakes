@@ -45,7 +45,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("", "")
+	args := ca.buildArgs("", "", "")
 
 	// Default (no opt-out): pristine args, no project-doc suppression - ordinary
 	// repos keep loading AGENTS.md (backward-compat).
@@ -68,7 +68,7 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_ExtraArgsAfterExec(t *testing.T) {
 	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.4"}}
-	args := ca.buildArgs("", "")
+	args := ca.buildArgs("", "", "")
 
 	expected := []string{
 		"exec",
@@ -97,7 +97,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 	}
 	for _, extra := range tests {
 		ca := &codexAgent{bin: "codex", extraArgs: extra}
-		args := ca.buildArgs("", "")
+		args := ca.buildArgs("", "", "")
 
 		bypassCount := 0
 		for _, a := range args {
@@ -117,7 +117,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("/tmp/schema.json", "")
+	args := ca.buildArgs("/tmp/schema.json", "", "")
 
 	want := []string{
 		"exec", "-",
@@ -133,6 +133,44 @@ func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 		if args[i] != want[i] {
 			t.Fatalf("arg[%d]: expected %q, got %q in %v", i, want[i], args[i], args)
 		}
+	}
+}
+
+func TestCodexAgent_BuildArgs_EvidenceDirIsExactAndBeforeResume(t *testing.T) {
+	evidenceDir := filepath.Join(t.TempDir(), "run evidence")
+	for _, resumeID := range []string{"", "thread-123"} {
+		ca := &codexAgent{bin: "codex"}
+		args := ca.buildArgs("", resumeID, evidenceDir)
+
+		if len(args) < 3 || args[0] != "exec" || args[1] != "--add-dir" || args[2] != evidenceDir {
+			t.Fatalf("resumeID=%q args=%v, want exact --add-dir root on parent exec", resumeID, args)
+		}
+		if resumeID != "" && (len(args) < 4 || args[3] != "resume") {
+			t.Fatalf("resumeID=%q args=%v, want resume after parent exec grant", resumeID, args)
+		}
+		if count := countArg(args, "--add-dir"); count != 1 {
+			t.Fatalf("resumeID=%q args=%v, want one evidence grant", resumeID, args)
+		}
+	}
+}
+
+func TestCodexAgent_BuildArgs_EvidenceDirDoesNotLeakBetweenRuns(t *testing.T) {
+	firstDir := filepath.Join(t.TempDir(), "first")
+	secondDir := filepath.Join(t.TempDir(), "second")
+	ca := &codexAgent{bin: "codex"}
+
+	first := ca.buildArgs("", "", firstDir)
+	second := ca.buildArgs("", "", secondDir)
+	if !argsContainPair(first, "--add-dir", firstDir) || argsContainPair(first, "--add-dir", secondDir) {
+		t.Fatalf("first run args=%v, want only first evidence root", first)
+	}
+	if !argsContainPair(second, "--add-dir", secondDir) || argsContainPair(second, "--add-dir", firstDir) {
+		t.Fatalf("second run args=%v, want only second evidence root", second)
+	}
+
+	empty := ca.buildArgs("", "", "")
+	if argsContain(empty, "--add-dir") {
+		t.Fatalf("empty evidence run args=%v, must not inherit a previous grant", empty)
 	}
 }
 
@@ -381,6 +419,100 @@ exit 1
 	}
 }
 
+// TestCodexAgent_FailedExitCarriesCumulativeUsageMarker proves a turn that
+// reported usage and then exited non-zero still returns codex's own session
+// facts. codex counts usage cumulatively across a resumed thread, so a result
+// missing SessionUsageCumulative is recorded as a per-round delta and charges
+// every earlier round of the thread a second time.
+func TestCodexAgent_FailedExitCarriesCumulativeUsageMarker(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2500,"output_tokens":250,"cached_input_tokens":1800}}'
+exit 1
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}",
+		"echo {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":2500,\"output_tokens\":250,\"cached_input_tokens\":1800}}",
+		"exit /b 1",
+	}, "\r\n"))
+
+	ca := &codexAgent{bin: bin}
+	res, err := ca.Run(context.Background(), RunOpts{
+		Prompt:  "review",
+		CWD:     t.TempDir(),
+		Session: &SessionRef{ID: "thread-1"},
+	})
+	if err == nil {
+		t.Fatal("expected codex failure")
+	}
+	if res == nil {
+		t.Fatal("failed codex turn that reported usage must return its usage")
+	}
+	if !res.UsageReported || res.Usage.InputTokens != 2500 {
+		t.Fatalf("usage = %+v, want reported input 2500", res.Usage)
+	}
+	if !res.SessionUsageCumulative {
+		t.Fatal("failed codex turn must mark its usage cumulative")
+	}
+	if !res.Resumed {
+		t.Fatal("failed codex turn must report the resume it was asked for")
+	}
+}
+
+func TestCodexAgent_RunFillsOmittedNullableFields(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"required\":\"present\",\"nested\":{}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}'
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"required\\\":\\\"present\\\",\\\"nested\\\":{}}\"}}",
+		"echo {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}",
+	}, "\r\n"))
+
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"required":{"type":"string"},
+			"optional":{"type":"string"},
+			"nested":{
+				"type":"object",
+				"properties":{
+					"nested_optional":{"type":"boolean"}
+				},
+				"required":[]
+			}
+		},
+		"required":["required","nested"]
+	}`)
+
+	result, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{
+		Prompt:     "review",
+		CWD:        dir,
+		JSONSchema: schema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	optional, present := output["optional"]
+	if !present || optional != nil {
+		t.Fatalf("optional field = %#v (present=%t), want explicit null", optional, present)
+	}
+	nested, ok := output["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested field = %#v, want object", output["nested"])
+	}
+	nestedOptional, present := nested["nested_optional"]
+	if !present || nestedOptional != nil {
+		t.Fatalf("nested optional field = %#v (present=%t), want explicit null", nestedOptional, present)
+	}
+}
+
 func TestCodexAgent_RunAcceptsNormalizedNullableFields(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakeCodex(t, dir, `#!/bin/sh
@@ -622,7 +754,7 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 // suppression knobs are emitted under the opt-out.
 func TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true}
-	args := ca.buildArgs("", "")
+	args := ca.buildArgs("", "", "")
 	if !argsContainPair(args, "-c", "project_doc_max_bytes=0") {
 		t.Errorf("buildArgs = %v, want a `-c project_doc_max_bytes=0` pair", args)
 	}
@@ -636,7 +768,7 @@ func TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut(t *testing.T) {
 // exactly as before.
 func TestCodexAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("", "")
+	args := ca.buildArgs("", "", "")
 	if argsContainPair(args, "-c", "project_doc_max_bytes=0") || argsContain(args, "--ignore-rules") {
 		t.Errorf("buildArgs = %v, must add no suppression when the repo did not opt out", args)
 	}
@@ -647,7 +779,7 @@ func TestCodexAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 // but still accepts the global -c and --ignore-rules.
 func TestCodexAgent_BuildArgs_SuppressesOnResumeUnderOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true}
-	args := ca.buildArgs("", "thread-123")
+	args := ca.buildArgs("", "thread-123", "")
 	if args[0] != "exec" || args[1] != "resume" || args[2] != "thread-123" {
 		t.Fatalf("resume positional prefix disturbed: %v", args)
 	}
@@ -660,7 +792,7 @@ func TestCodexAgent_BuildArgs_SuppressesOnResumeUnderOptOut(t *testing.T) {
 // pinned their own project_doc_max_bytes is not double-set even under opt-out.
 func TestCodexAgent_BuildArgs_UserProjectDocOverrideWins(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true, extraArgs: []string{"-c", "project_doc_max_bytes=4096"}}
-	args := ca.buildArgs("", "")
+	args := ca.buildArgs("", "", "")
 	if argsContainPair(args, "-c", "project_doc_max_bytes=0") {
 		t.Errorf("buildArgs = %v, must not add project_doc_max_bytes=0 over a user pin", args)
 	}
@@ -673,6 +805,16 @@ func argsContain(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+func countArg(args []string, want string) int {
+	count := 0
+	for _, arg := range args {
+		if arg == want {
+			count++
+		}
+	}
+	return count
 }
 
 func argsContainPair(args []string, flag, value string) bool {

@@ -184,7 +184,7 @@ func filterStructuredToSchema(structured map[string]any, schemaPath string) (map
 func extractCodexPrompt(args []string, promptReader io.Reader) (string, error) {
 	flagsWithValues := map[string]bool{
 		"-m": true, "--model": true,
-		"--sandbox": true, "--ask-for-approval": true,
+		"--sandbox": true, "--ask-for-approval": true, "--add-dir": true,
 		"--config": true, "--profile": true,
 		"--output-schema":    true,
 		"--reasoning-effort": true, "--reasoning-summary": true,

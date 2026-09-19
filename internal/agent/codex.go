@@ -58,7 +58,7 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	})
 }
 
-func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (result *Result, retErr error) {
 	schemaPath := ""
 	validationSchema := opts.JSONSchema
 	if len(opts.JSONSchema) > 0 {
@@ -90,7 +90,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(schemaPath, resumeID)
+	args := a.buildArgs(schemaPath, resumeID, opts.EvidenceDir)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = strings.NewReader(opts.Prompt)
@@ -118,12 +118,30 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	var codexErr string
 	var threadID string
 	metrics := newCodexMetricsAccumulator()
+	// An error return carries the same session facts the success path sets
+	// below, so cumulative thread usage is never read as a per-round delta.
+	partialResult := func() *Result {
+		res := resultFromUsage(usage)
+		if res != nil {
+			res.SessionID = threadID
+			res.Resumed = resumeID != ""
+			res.SessionUsageCumulative = true
+		}
+		return res
+	}
+	defer func() {
+		// Tool starts, partial answers and undecodable activity remain sticky:
+		// a fresh invocation cannot know what work the failed one performed.
+		if retErr != nil && metrics.replayUnsafe {
+			retErr = fmt.Errorf("%w: %w", ErrReplayUnsafe, retErr)
+		}
+	}()
 	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("codex parse events: %w", err)
 		emitAgentExited(opts, "codex", pid, retErr)
-		return nil, retErr
+		return partialResult(), retErr
 	}
 
 	waitErr := started.wait()
@@ -138,9 +156,15 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		}
 		retErr := fmt.Errorf("codex exited: %w: %s", waitErr, detail)
 		emitAgentExited(opts, "codex", pid, retErr)
-		return nil, retErr
+		return partialResult(), retErr
 	}
 
+	// Codex's strict output mode treats every property as required after
+	// addAdditionalPropertiesFalse, but it may still omit properties that were
+	// optional in the caller's schema. The normalized schema makes those fields
+	// nullable; materialize them as null before the shared validator sees the
+	// response so omission remains compatible without weakening required fields.
+	lastMessage = codexFillNullableRequiredFields(lastMessage, opts.JSONSchema)
 	res, err := finalizeTextResult("codex", lastMessage, validationSchema, usage)
 	if res != nil {
 		res.SessionID = threadID
@@ -163,13 +187,18 @@ func (a *codexAgent) Close() error { return nil }
 // inserted between "exec" and the stdin prompt marker so user flags (e.g. -m, --sandbox)
 // take effect. If the user declared their own execution-mode flag, the
 // default --dangerously-bypass-approvals-and-sandbox is not added.
-// A non-empty resumeID routes through `codex exec resume <id> -`,
-// which exposes a narrower flag surface than `codex exec` (no --color, no
-// -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
-// invocation fail fast and the caller's cold fallback preserves correctness.
-func (a *codexAgent) buildArgs(schemaPath, resumeID string) []string {
-	args := make([]string, 0, len(a.extraArgs)+11)
+// A non-empty evidenceDir is passed to the parent `codex exec` command as an
+// exact run-scoped writable root before the optional `resume` subcommand.
+// A non-empty resumeID routes through `codex exec resume <id> -`, which exposes
+// a narrower flag surface than `codex exec` (no --color, no -s/--sandbox as of
+// codex 0.144): unsupported user extraArgs make the invocation fail fast and
+// the caller's cold fallback preserves correctness.
+func (a *codexAgent) buildArgs(schemaPath, resumeID, evidenceDir string) []string {
+	args := make([]string, 0, len(a.extraArgs)+13)
 	args = append(args, "exec")
+	if evidenceDir != "" {
+		args = append(args, "--add-dir", evidenceDir)
+	}
 	if resumeID != "" {
 		args = append(args, "resume")
 	}
@@ -340,7 +369,24 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 
 		var event codexEvent
 		if err := json.Unmarshal(line, &event); err != nil {
+			if metrics != nil {
+				metrics.replayUnsafe = true
+			}
 			continue // skip malformed lines
+		}
+		if metrics != nil {
+			switch event.Type {
+			case "thread.started", "turn.started", "turn.completed", "turn.failed", "error":
+				// Known control and failure events alone do not execute work.
+			case "item.started", "item.updated", "item.completed":
+				// Plans, reasoning and error notices do not execute work.
+				// Unknown item kinds fail closed, including future tools.
+				nonWork := event.Item != nil && (event.Item.Type == "reasoning" ||
+					event.Item.Type == "todo_list" || event.Item.Type == "error")
+				metrics.replayUnsafe = metrics.replayUnsafe || !nonWork
+			default:
+				metrics.replayUnsafe = true
+			}
 		}
 
 		switch event.Type {
@@ -380,7 +426,10 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 		}
 	}
 
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrReplayUnsafe, err)
+	}
+	return nil
 }
 
 func codexOutputSchema(schema json.RawMessage) ([]byte, error) {
@@ -390,6 +439,75 @@ func codexOutputSchema(schema json.RawMessage) ([]byte, error) {
 	}
 	addAdditionalPropertiesFalse(value)
 	return json.Marshal(value)
+}
+
+// codexFillNullableRequiredFields turns properties that were optional in the
+// caller's schema but became required by addAdditionalPropertiesFalse into
+// explicit nulls when Codex omitted them. It deliberately leaves genuinely
+// required properties absent: the normal structured-output validator must still
+// reject those responses. Invalid or non-JSON text is returned unchanged so
+// the shared parser remains responsible for reporting its ordinary error.
+func codexFillNullableRequiredFields(text string, schema json.RawMessage) string {
+	if len(schema) == 0 || strings.TrimSpace(text) == "" {
+		return text
+	}
+
+	var output any
+	if err := json.Unmarshal([]byte(text), &output); err != nil {
+		return text
+	}
+	var schemaValue any
+	if err := json.Unmarshal(schema, &schemaValue); err != nil {
+		return text
+	}
+
+	if !codexFillNullableFields(output, schemaValue) {
+		return text
+	}
+	filled, err := json.Marshal(output)
+	if err != nil {
+		return text
+	}
+	return string(filled)
+}
+
+func codexFillNullableFields(value, schema any) bool {
+	schemaMap, ok := schema.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	changed := false
+	if properties, ok := schemaMap["properties"].(map[string]any); ok {
+		object, ok := value.(map[string]any)
+		if ok {
+			required := requiredSet(schemaMap)
+			for name, propertySchema := range properties {
+				property, present := object[name]
+				if !present {
+					if !required[name] {
+						object[name] = nil
+						changed = true
+					}
+					continue
+				}
+				if property != nil && codexFillNullableFields(property, propertySchema) {
+					changed = true
+				}
+			}
+		}
+	}
+
+	if items, ok := schemaMap["items"]; ok {
+		if array, ok := value.([]any); ok {
+			for _, item := range array {
+				if codexFillNullableFields(item, items) {
+					changed = true
+				}
+			}
+		}
+	}
+	return changed
 }
 
 func addAdditionalPropertiesFalse(value any) {

@@ -192,7 +192,7 @@ func TestStatusSurfacesGateFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.ParkStepForApproval(run.ID, step.ID, types.StepStatusAwaitingApproval, 1, &findings); err != nil {
+	if err := f.db.ParkStepForApproval(run.ID, step.ID, types.StepStatusAwaitingApproval, 0, 1, &findings); err != nil {
 		t.Fatal(err)
 	}
 
@@ -211,6 +211,44 @@ func TestStatusSurfacesGateFindings(t *testing.T) {
 	}
 	if state.Gate.Findings[0].Action != types.ActionAskUser {
 		t.Errorf("first finding action = %q, want ask-user", state.Gate.Findings[0].Action)
+	}
+}
+
+func TestStatusPreservesApprovedTestException(t *testing.T) {
+	f := newFixture(t)
+	head := gitRun(t, f.repoPath, "rev-parse", "HEAD")
+	run, err := f.db.InsertRun(f.repo.ID, "feature/x", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := f.db.InsertStepResult(run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[],"verdict":"inconclusive"}`
+	if err := f.db.ParkStepForApproval(run.ID, step.ID, types.StepStatusAwaitingApproval, 0, 1, &findings); err != nil {
+		t.Fatal(err)
+	}
+	const reason = "operator accepts the unverified live scenario"
+	if err := f.db.SetTestApprovalReason(step.ID, reason); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.CompleteStep(step.ID, 0, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := f.svc.Status(context.Background(), f.repoPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Outcome != "passed-with-override" || state.CIReady {
+		t.Fatalf("approved Test exception reported as clean: %+v", state)
+	}
+	if !strings.Contains(state.TestOverrideReason, reason) || state.CIOverrideReason != "" {
+		t.Fatalf("Test exception was lost or attributed to CI: %+v", state)
 	}
 }
 

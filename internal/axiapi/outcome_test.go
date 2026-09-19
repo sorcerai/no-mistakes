@@ -60,7 +60,7 @@ func TestOutcome(t *testing.T) {
 		{"automatic skips", string(types.RunCompleted), "", skips, "passed-with-skips"},
 		{"failure keeps its word", string(types.RunFailed), "live checks still failing", skips, "failed"},
 	} {
-		if got := Outcome(tc.status, tc.override, tc.skips); got != tc.want {
+		if got := Outcome(tc.status, tc.override, tc.skips, ""); got != tc.want {
 			t.Errorf("%s: Outcome = %q, want %q", tc.name, got, tc.want)
 		}
 	}

@@ -16,11 +16,12 @@ import (
 // Opaque values are base64-encoded because push options are line-oriented and
 // an intent routinely spans lines.
 const (
-	IntentPushOptionPrefix               = "no-mistakes.intent="
-	LaunchNoncePushOptionPrefix          = "no-mistakes.launch-nonce="
-	ValidationGenerationPushOptionPrefix = "no-mistakes.validation-generation="
-	PRBaseBranchPushOptionPrefix         = "no-mistakes.pr-base-branch="
-	SkipPushOptionPrefix                 = "no-mistakes.skip="
+	IntentPushOptionPrefix                 = "no-mistakes.intent="
+	LaunchNoncePushOptionPrefix            = "no-mistakes.launch-nonce="
+	ValidationGenerationPushOptionPrefix   = "no-mistakes.validation-generation="
+	PRBaseBranchPushOptionPrefix           = "no-mistakes.pr-base-branch="
+	SkipPushOptionPrefix                   = "no-mistakes.skip="
+	ReconciledPreviousHeadPushOptionPrefix = "no-mistakes.reconciled-previous-head="
 )
 
 // FormatIntentPushOption encodes intent as a single push option, or returns ""
@@ -55,6 +56,16 @@ func FormatPRBaseBranchPushOption(branch string) string {
 		return ""
 	}
 	return PRBaseBranchPushOptionPrefix + branch
+}
+
+// FormatReconciledPreviousHeadPushOption carries the archived mirror head
+// through the trigger push, whose receive hook sees a recreated branch.
+func FormatReconciledPreviousHeadPushOption(head string) string {
+	head = strings.TrimSpace(head)
+	if head == "" {
+		return ""
+	}
+	return ReconciledPreviousHeadPushOptionPrefix + head
 }
 
 // FormatSkipPushOptions encodes the requested step skips as one push option.

@@ -189,11 +189,11 @@ func TestExtractCodexPromptReadsStdin(t *testing.T) {
 	}{
 		{
 			name: "fresh",
-			args: []string{"exec", "--output-schema", "/tmp/schema.json", "--model", "gpt-5.4", "-", "--json", "--color", "never"},
+			args: []string{"exec", "--add-dir", "/tmp/run evidence", "--output-schema", "/tmp/schema.json", "--model", "gpt-5.4", "-", "--json", "--color", "never"},
 		},
 		{
 			name: "resume",
-			args: []string{"exec", "resume", "--model", "gpt-5.4", "thread-123", "-", "--json"},
+			args: []string{"exec", "--add-dir", "/tmp/run evidence", "resume", "--model", "gpt-5.4", "thread-123", "-", "--json"},
 		},
 	}
 	for _, tc := range tests {

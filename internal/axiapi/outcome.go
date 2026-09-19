@@ -56,16 +56,17 @@ func AutomaticSkips(steps []StepState) []AutomaticSkip {
 }
 
 // Outcome maps a terminal run status onto the agent-facing outcome word,
-// qualifying a completed run whose external checks were overridden by a human
-// or whose publication/verification skipped automatically. Both qualifications
-// exist so a deliberate override and a silently unpublished run cannot read
+// qualifying a completed run whose external checks were overridden by a human,
+// whose approved Test exception remains attached to the run, or whose
+// publication/verification skipped automatically. These qualifications
+// exist so a deliberate override or silently unpublished run cannot read
 // identically to a genuinely green one.
-func Outcome(status, overrideReason string, skips []AutomaticSkip) string {
+func Outcome(status, overrideReason string, skips []AutomaticSkip, testOverrideReason string) string {
 	word := outcomeWord(status)
 	if word != "passed" {
 		return word
 	}
-	if overrideReason != "" {
+	if overrideReason != "" || testOverrideReason != "" {
 		return "passed-with-override"
 	}
 	if len(skips) > 0 {

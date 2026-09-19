@@ -151,27 +151,61 @@ func branchOwnership(ctx context.Context, e *env) *branchsync.State {
 // falling back to a rerun when the push was a no-op because the gate already
 // holds this commit.
 func trigger(ctx context.Context, e *env, branch, headSHA string, req RunRequest) (string, error) {
-	pushOptions := FormatSkipPushOptions(req.Skip)
-	if opt := FormatIntentPushOption(req.Intent); opt != "" {
-		pushOptions = append(pushOptions, opt)
+	// Resolve the immutable submission head immediately before the baseline
+	// lookup. A caller's earlier HEAD read can become stale while the daemon
+	// or branch-ownership checks are in flight.
+	observedHead, err := git.HeadSHA(ctx, e.repoPath)
+	if err != nil {
+		return "", fmt.Errorf("prepare private mirror for %q: resolve submission head: %w", branch, err)
 	}
+	headSHA = observedHead
 	priorRunIDs, err := runIDsForHead(ctx, e.client, e.repo.ID, branch, headSHA)
 	if err != nil {
+		// Without a baseline, a matching terminal run may predate this push.
+		// Fail closed instead of attaching to it.
 		return "", fmt.Errorf("get prior runs for %q: %w", branch, err)
 	}
 	if state := branchOwnership(ctx, e); state != nil {
 		return "", &BranchOwnershipError{State: *state}
 	}
-	pushErr := git.PushWithOptions(ctx, e.repoPath, gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
+	// Close the inspection-to-push race by binding every later operation to the
+	// newly observed immutable commit.
+	submissionHead, err := git.HeadSHA(ctx, e.repoPath)
+	if err != nil {
+		return "", fmt.Errorf("prepare private mirror for %q: refresh submission head: %w", branch, err)
+	}
+	if submissionHead != headSHA {
+		headSHA = submissionHead
+		priorRunIDs, err = runIDsForHead(ctx, e.client, e.repo.ID, branch, headSHA)
+		if err != nil {
+			return "", fmt.Errorf("get prior runs for %q: %w", branch, err)
+		}
+	}
+	reconciliation, err := gate.ReconcileStaleBranch(ctx, e.p.RepoDir(e.repo.ID), e.repoPath, branch, submissionHead, "")
+	if err != nil {
+		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+	}
+	pushOptions := FormatSkipPushOptions(req.Skip)
+	if opt := FormatIntentPushOption(req.Intent); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
+	if opt := FormatReconciledPreviousHeadPushOption(reconciliation.PreviousHead); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
+	pushErr := git.PushCommitWithOptionsSkippingHooks(ctx, e.repoPath, gate.RemoteName, submissionHead, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
-		// Close the inspection-to-push race: if the pipeline took ownership
-		// after the check above, keep the structured refusal rather than
-		// leaking the resulting non-fast-forward.
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), triggerWaitTimeout)
+		restoreErr := gate.RestoreReconciledBranch(restoreCtx, e.p.RepoDir(e.repo.ID), branch, reconciliation)
+		cancel()
+		if restoreErr != nil {
+			return "", fmt.Errorf("push %q to gate: %v; restore reconciled branch: %w", branch, pushErr, restoreErr)
+		}
+		// The pipeline may have taken ownership after the pre-push check.
 		if state := branchOwnership(ctx, e); state != nil {
 			return "", &BranchOwnershipError{State: *state}
 		}
 	}
-	run, waitErr := waitForTriggeredRun(ctx, e.client, e.repo.ID, branch, headSHA, priorRunIDs)
+	run, waitErr := waitForTriggeredRun(ctx, e.client, e.repo.ID, branch, submissionHead, priorRunIDs)
 	if waitErr != nil {
 		return "", fmt.Errorf("wait for triggered run: %w", waitErr)
 	}
