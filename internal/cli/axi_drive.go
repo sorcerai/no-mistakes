@@ -534,7 +534,14 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 		}
 	}
 
-	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout); run != nil {
+	// Only the wait window expiring (nil, nil) means no run appeared. A failed
+	// or cancelled poll proves nothing, and a rerun would duplicate the run
+	// this push may have created.
+	run, waitErr := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout)
+	if waitErr != nil {
+		return "", fmt.Errorf("wait for triggered run: %w", waitErr)
+	}
+	if run != nil {
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {
