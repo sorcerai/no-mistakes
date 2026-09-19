@@ -1,17 +1,22 @@
 package config
 
 import (
+	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestLoadGlobal_MCPAllowedRepoRoots(t *testing.T) {
-	cfg, err := LoadGlobalFromBytes([]byte("mcp:\n  allowed_repo_roots:\n    - /srv/repos\n    - /home/dev/src\n"))
+	first := filepath.Join(t.TempDir(), "repos")
+	second := filepath.Join(t.TempDir(), "src")
+	config := fmt.Sprintf("mcp:\n  allowed_repo_roots:\n    - '%s'\n    - '%s'\n", first, second)
+	cfg, err := LoadGlobalFromBytes([]byte(config))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(cfg.MCP.AllowedRepoRoots) != 2 || cfg.MCP.AllowedRepoRoots[0] != "/srv/repos" {
+	if len(cfg.MCP.AllowedRepoRoots) != 2 || cfg.MCP.AllowedRepoRoots[0] != first || cfg.MCP.AllowedRepoRoots[1] != second {
 		t.Fatalf("AllowedRepoRoots = %#v", cfg.MCP.AllowedRepoRoots)
 	}
 }
