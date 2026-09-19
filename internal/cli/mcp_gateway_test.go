@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,26 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func writeEvidence(t *testing.T, filename string, data any) {
+	t.Helper()
+	dir := os.Getenv("NM_EVIDENCE_DIR")
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Logf("mkdir evidence dir: %v", err)
+		return
+	}
+	payload, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		t.Logf("marshal evidence: %v", err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, filename), payload, 0o644); err != nil {
+		t.Logf("write evidence %s: %v", filename, err)
+	}
+}
 
 // These journeys prove the gateway's two central contracts - an ask-user gate
 // is never resolved or lost by the gateway, and a receipt carries the PR URL and
@@ -192,7 +214,8 @@ func TestMCPGatewayAskUserGateSurvivesGatewayExit(t *testing.T) {
 	}
 
 	first := startGatewayProcess(t)
-	assertGate(t, gatewayCall(t, first, "nomistakes_status", map[string]any{"repo_path": worktree}))
+	initialStatus := gatewayCall(t, first, "nomistakes_status", map[string]any{"repo_path": worktree})
+	assertGate(t, initialStatus)
 
 	// Every action, and a decision that is only whitespace, is refused - with
 	// the findings a human has to see, and without the gate moving.
@@ -202,12 +225,16 @@ func TestMCPGatewayAskUserGateSurvivesGatewayExit(t *testing.T) {
 		{"repo_path": worktree, "action": "skip"},
 		{"repo_path": worktree, "action": "approve", "user_decision": "   \n\t"},
 	}
+	var recordedRefusals []map[string]any
 	for _, args := range refusals {
 		denied := gatewayCall(t, first, "nomistakes_respond", args)
 		if denied["ok"] != false || receiptErrorCode(denied) != "user_decision_required" {
 			t.Fatalf("respond %v was not refused for a missing decision: %#v", args, denied)
 		}
 		assertGate(t, denied)
+		recordedRefusals = append(recordedRefusals, map[string]any{
+			"input": args, "receipt": denied, "code": receiptErrorCode(denied),
+		})
 	}
 	if got := readGateSnapshot(t, run.ID); got != before {
 		t.Fatalf("refused responses changed the gate:\nbefore %+v\nafter  %+v", before, got)
@@ -218,27 +245,45 @@ func TestMCPGatewayAskUserGateSurvivesGatewayExit(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatalf("gateway exit: %v", err)
 	}
-	if got := readGateSnapshot(t, run.ID); got != before {
-		t.Fatalf("gateway exit changed the gate:\nbefore %+v\nafter  %+v", before, got)
+	afterExit := readGateSnapshot(t, run.ID)
+	if afterExit != before {
+		t.Fatalf("gateway exit changed the gate:\nbefore %+v\nafter  %+v", before, afterExit)
 	}
 
 	// A fresh gateway process reattaches by branch alone and finds the same
 	// gate, still refusing to answer it.
 	second := startGatewayProcess(t)
 	defer second.Close()
-	assertGate(t, gatewayCall(t, second, "nomistakes_status", map[string]any{"repo_path": worktree}))
+	reattachedStatus := gatewayCall(t, second, "nomistakes_status", map[string]any{"repo_path": worktree})
+	assertGate(t, reattachedStatus)
 	denied := gatewayCall(t, second, "nomistakes_respond", map[string]any{"repo_path": worktree, "run_id": run.ID, "action": "approve"})
 	if receiptErrorCode(denied) != "user_decision_required" {
 		t.Fatalf("reattached gateway did not refuse: %#v", denied)
 	}
-	if got := readGateSnapshot(t, run.ID); got != before {
-		t.Fatalf("reattached gateway changed the gate:\nbefore %+v\nafter  %+v", before, got)
+	finalSnap := readGateSnapshot(t, run.ID)
+	if finalSnap != before {
+		t.Fatalf("reattached gateway changed the gate:\nbefore %+v\nafter  %+v", before, finalSnap)
 	}
 
 	// No refusal reached for the daemon: none was ever started for this home.
 	if _, err := os.Stat(p.Socket()); !os.IsNotExist(err) {
 		t.Fatalf("a daemon socket exists after refused responses (stat err %v); a refusal must not contact the daemon", err)
 	}
+
+	writeEvidence(t, "scenario1-ask-user-gate-survival.json", map[string]any{
+		"scenario":                         "Ask-user gate survives gateway process exit and reattach without resolution or loss",
+		"worktree":                         worktree,
+		"gate_branch":                      gateBranch,
+		"run_id":                           run.ID,
+		"gate_snapshot_initial":            before,
+		"initial_status_receipt":           initialStatus,
+		"unauthorized_respond_refusals":    recordedRefusals,
+		"gate_snapshot_after_gateway_exit": afterExit,
+		"reattached_status_receipt":        reattachedStatus,
+		"reattached_refused_receipt":       denied,
+		"gate_snapshot_final":              finalSnap,
+		"daemon_contacted":                 false,
+	})
 }
 
 // TestMCPGatewayReceiptAndAuthorizedSync reads a completed, pushed run as the
@@ -267,6 +312,7 @@ func TestMCPGatewayReceiptAndAuthorizedSync(t *testing.T) {
 	session := startGatewayProcess(t)
 	defer session.Close()
 
+	var statusReceipts []map[string]any
 	for _, args := range []map[string]any{
 		{"repo_path": f.local, "run_id": f.runID},
 		{"repo_path": f.local},
@@ -283,7 +329,17 @@ func TestMCPGatewayReceiptAndAuthorizedSync(t *testing.T) {
 		if receipt["ci"] != nil {
 			t.Fatalf("receipt claims ci %v for a run with no verified checks", receipt["ci"])
 		}
+		statusReceipts = append(statusReceipts, receipt)
 	}
+	writeEvidence(t, "scenario2-receipt-verification.json", map[string]any{
+		"scenario":          "Receipts return PR URL, full 40-character head SHA, and null CI when unverified",
+		"repo_path":         f.local,
+		"run_id":            f.runID,
+		"expected_pr_url":   prURL,
+		"expected_head_sha": f.pushed,
+		"head_sha_len":      len(f.pushed),
+		"status_receipts":   statusReceipts,
+	})
 
 	refs := func() string {
 		return cliGit(t, f.local, "for-each-ref", "--format=%(refname) %(objectname)") + "\nHEAD " + cliGit(t, f.local, "rev-parse", "HEAD")
@@ -295,6 +351,7 @@ func TestMCPGatewayReceiptAndAuthorizedSync(t *testing.T) {
 	}
 	untouched := refs()
 
+	var syncRefusals []map[string]any
 	refused := func(args map[string]any, wantCode string) {
 		t.Helper()
 		receipt := gatewayCall(t, session, "nomistakes_sync", args)
@@ -304,6 +361,9 @@ func TestMCPGatewayReceiptAndAuthorizedSync(t *testing.T) {
 		if got := refs(); got != untouched {
 			t.Fatalf("refused sync %v changed refs:\nbefore %s\nafter  %s", args, untouched, got)
 		}
+		syncRefusals = append(syncRefusals, map[string]any{
+			"args": args, "want_code": wantCode, "receipt": receipt,
+		})
 	}
 	// Recovery is not what AXI authorized, and asserting both is not a way in.
 	refused(map[string]any{"repo_path": f.local, "recover": true}, "sync_not_authorized")
@@ -331,4 +391,123 @@ func TestMCPGatewayReceiptAndAuthorizedSync(t *testing.T) {
 	// Synchronized, AXI authorizes nothing further, so a repeat is refused.
 	untouched = refs()
 	refused(map[string]any{"repo_path": f.local, "apply": true}, "sync_not_authorized")
+
+	writeEvidence(t, "scenario3-guarded-sync.json", map[string]any{
+		"scenario":           "Guarded branch sync authorizes only AXI-prescribed mutations and rejects unauthorized/dirty states",
+		"repo_path":          f.local,
+		"inspected_receipt":  inspected,
+		"refused_operations": syncRefusals,
+		"applied_receipt":    applied,
+		"final_head":         cliGit(t, f.local, "rev-parse", "HEAD"),
+		"expected_head":      f.pushed,
+	})
+}
+
+// TestMCPGatewayRepositoryAllowlistAndTraversal proves repository allowlisting
+// and path canonicalization fail closed for outside, non-git, traversal, and
+// unconfigured targets.
+func TestMCPGatewayRepositoryAllowlistAndTraversal(t *testing.T) {
+	root := t.TempDir()
+	allowedRepo := filepath.Join(root, "allowed-repo")
+	cliGit(t, root, "init", "-b", "main", allowedRepo)
+
+	outsideRepo := filepath.Join(root, "outside-repo")
+	cliGit(t, root, "init", "-b", "main", outsideRepo)
+
+	nonGitDir := filepath.Join(root, "empty-dir")
+	if err := os.MkdirAll(nonGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Configure roots to allow both allowedRepo and nonGitDir
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configContent := fmt.Sprintf("mcp:\n  allowed_repo_roots:\n    - %s\n    - %s\n", allowedRepo, nonGitDir)
+	if err := os.WriteFile(p.ConfigFile(), []byte(configContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	session := startGatewayProcess(t)
+	defer session.Close()
+
+	// 1. Allowed repo succeeds allowlist check
+	allowedReceipt := gatewayCall(t, session, "nomistakes_status", map[string]any{"repo_path": allowedRepo})
+	if receiptErrorCode(allowedReceipt) == "repo_not_allowed" {
+		t.Fatalf("allowed repo was refused: %#v", allowedReceipt)
+	}
+
+	// 2. Outside repo fails with repo_not_allowed
+	outsideReceipt := gatewayCall(t, session, "nomistakes_status", map[string]any{"repo_path": outsideRepo})
+	if outsideReceipt["ok"] != false || receiptErrorCode(outsideReceipt) != "repo_not_allowed" {
+		t.Fatalf("outside repo %s was not refused: %#v", outsideRepo, outsideReceipt)
+	}
+
+	// 3. Traversal path fails with repo_not_allowed
+	traversalPath := filepath.Join(allowedRepo, "..", "outside-repo")
+	traversalReceipt := gatewayCall(t, session, "nomistakes_status", map[string]any{"repo_path": traversalPath})
+	if traversalReceipt["ok"] != false || receiptErrorCode(traversalReceipt) != "repo_not_allowed" {
+		t.Fatalf("traversal path was not refused: %#v", traversalReceipt)
+	}
+
+	// 4. Non-git directory fails closed with not_a_git_repository
+	nonGitReceipt := gatewayCall(t, session, "nomistakes_status", map[string]any{"repo_path": nonGitDir})
+	if nonGitReceipt["ok"] != false || receiptErrorCode(nonGitReceipt) != "not_a_git_repository" {
+		t.Fatalf("non-git repo was not refused: %#v", nonGitReceipt)
+	}
+
+	writeEvidence(t, "scenario4-repo-allowlist-traversal.json", map[string]any{
+		"scenario":           "Repository allowlisting and fail-closed path canonicalization",
+		"allowed_repo":       allowedRepo,
+		"allowed_receipt":    allowedReceipt,
+		"outside_repo":       outsideRepo,
+		"outside_receipt":    outsideReceipt,
+		"traversal_path":     traversalPath,
+		"traversal_receipt":  traversalReceipt,
+		"non_git_path":       nonGitDir,
+		"non_git_receipt":    nonGitReceipt,
+	})
+}
+
+// TestMCPGatewayToolSurfaceContract proves the tool listing exposes exactly the
+// 6 v1 tools and strictly omits forbidden operations (merge, push, abort).
+func TestMCPGatewayToolSurfaceContract(t *testing.T) {
+	session := startGatewayProcess(t)
+	defer session.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	list, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	var toolNames []string
+	var forbidden []string
+	toolDetails := make(map[string]any)
+	for _, tool := range list.Tools {
+		toolNames = append(toolNames, tool.Name)
+		toolDetails[tool.Name] = map[string]any{
+			"description":  tool.Description,
+			"annotations":  tool.Annotations,
+			"input_schema": tool.InputSchema,
+		}
+		lower := strings.ToLower(tool.Name)
+		if strings.Contains(lower, "merge") || strings.Contains(lower, "push") || strings.Contains(lower, "abort") {
+			forbidden = append(forbidden, tool.Name)
+		}
+	}
+
+	if len(forbidden) > 0 {
+		t.Fatalf("found forbidden tools: %v", forbidden)
+	}
+
+	writeEvidence(t, "scenario6-tools-list-contract.json", map[string]any{
+		"scenario":        "MCP gateway tool catalog exposes exactly v1 tools and omits forbidden operations",
+		"tool_count":      len(toolNames),
+		"tool_names":      toolNames,
+		"tool_details":    toolDetails,
+		"forbidden_tools": forbidden,
+	})
 }

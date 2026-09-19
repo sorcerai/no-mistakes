@@ -75,6 +75,7 @@ When a branch passes the gate, it means:
 - Choice of agent: `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, or `cursor` / `acp:<target>` via `acpx`, with per-repo override and ordered fallbacks; every gate requires a runnable configured pipeline agent.
 - A TUI to watch, approve, fix, skip, or abort any step.
 - A `/no-mistakes` agent skill so a coding agent can do a task and gate it, or gate existing committed work, backed by a non-interactive `no-mistakes axi` interface.
+- An [MCP gateway](/no-mistakes/guides/mcp/) (`no-mistakes mcp serve --stdio`) so ChatGPT, Hermes, or other agent surfaces can deliver changes through the gate instead of writing to GitHub directly.
 - A setup wizard when you run bare `no-mistakes` with no active run on the current branch - it walks you through creating a branch, committing, and pushing through the gate, then attaches if the daemon registers the new run.
 
 ## Three ways to trigger the gate
@@ -85,7 +86,7 @@ The pipeline is the same no matter how you start it. There are three first-class
 - **`no-mistakes`** - the terminal UI. Run it after making changes and a [setup wizard](/no-mistakes/guides/setup-wizard/) walks you through branch, commit, and push, then attaches to the live run so you can watch, approve, fix, skip, or abort each step.
 - **`/no-mistakes`** - the agent skill. Tell a coding agent `/no-mistakes <task>` to have it do the task, commit it on a feature branch, and then gate it with that task as intent; use bare `/no-mistakes` to gate existing committed work. It resolves safe findings on its own and stops to relay anything that needs your decision. See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent).
 
-`no-mistakes init` installs the `/no-mistakes` skill at user level for its supported driving-agent locations; Grok Build is a pipeline runner and does not consume that skill. The skill drives `no-mistakes axi`, a non-interactive command surface that prints [TOON](https://toonformat.dev) to stdout, so an agent reaches the same gate and the same approval points you get in the TUI. See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent) for the supported consumers.
+`no-mistakes init` installs the `/no-mistakes` skill at user level for its supported driving-agent locations; Grok Build is a pipeline runner and does not consume that skill. The skill drives `no-mistakes axi`, a non-interactive command surface that prints [TOON](https://toonformat.dev) to stdout, so an agent reaches the same gate and the same approval points you get in the TUI. For agent surfaces like ChatGPT or Hermes that connect via the Model Context Protocol, the [MCP gateway](/no-mistakes/guides/mcp/) exposes the same pipeline over stdio. See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent) for the supported consumers.
 
 ## Next
 

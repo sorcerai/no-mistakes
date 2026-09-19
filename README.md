@@ -118,6 +118,7 @@ Every change runs through the same pipeline. Pick the entry point that fits how 
 - **`/no-mistakes`** - the agent skill. Tell the coding agent to do a task and gate it with `/no-mistakes <task>`, or use bare `/no-mistakes` to gate existing committed work. It runs the pipeline, has the pipeline apply safe fixes, and stops to ask you about anything that needs a human call.
 
 `no-mistakes init` installs the `/no-mistakes` skill for Claude Code and other agents. Under the hood the skill drives `no-mistakes axi`, a non-interactive TOON interface to the same approval flow.
+For agent surfaces like ChatGPT or Hermes that connect via the Model Context Protocol, `no-mistakes mcp serve --stdio` provides an [MCP gateway](https://kunchenguid.github.io/no-mistakes/guides/mcp/) to drive the same delivery flow.
 
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 

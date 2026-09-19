@@ -384,6 +384,29 @@ func TestMCPGatewayJourney(t *testing.T) {
 	if contradictory["ok"] != false {
 		t.Fatalf("apply and recover were accepted together: %#v", contradictory)
 	}
+
+	if dir := os.Getenv("NM_EVIDENCE_DIR"); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+		journeyEvidence := map[string]any{
+			"scenario":                     "Full end-to-end delivery journey through MCP gateway with live daemon, ask-user gate, and guarded sync",
+			"doctor_outside_roots":         refused,
+			"doctor_inside_roots":          doctor,
+			"status_before_run":            idle,
+			"run_default_branch_refused":   onMain,
+			"run_parked_at_ask_user_gate":  gate,
+			"unauthorized_respond_refused": denied,
+			"logs_retrieval":               logs,
+			"status_reattached_after_exit": reattached,
+			"authorized_respond_success":   done,
+			"final_status_completed":       final,
+			"sync_inspected":               inspected,
+			"sync_applied_or_refused":      applied,
+			"sync_contradictory_refused":   contradictory,
+		}
+		if data, err := json.MarshalIndent(journeyEvidence, "", "  "); err == nil {
+			_ = os.WriteFile(filepath.Join(dir, "scenario-e2e-delivery-journey.json"), data, 0o644)
+		}
+	}
 }
 
 // assertIntentReachedAgent proves the caller's own intent text was handed to

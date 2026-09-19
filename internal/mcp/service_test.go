@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -659,5 +661,22 @@ func TestMutatingToolsReturnPromptlyOnCancelledCaller(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
 		t.Fatalf("respond took %s, want prompt cancellation return", elapsed)
+	}
+
+	dir := os.Getenv("NM_EVIDENCE_DIR")
+	if dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+		runElapsed := svc.Run(context.Background(), RunInput{RepoPath: repo, Intent: "goal", WaitSeconds: 1})
+		respondElapsed := svc.Respond(context.Background(), RespondInput{RepoPath: repo, Action: "approve", WaitSeconds: 1})
+		evidence := map[string]any{
+			"scenario":                     "Bounded wait timeout returns running state with reattach next-action instead of error receipt",
+			"run_wait_elapsed_receipt":     runElapsed,
+			"respond_wait_elapsed_receipt": respondElapsed,
+			"cancelled_run_receipt":        gotRun,
+			"cancelled_respond_receipt":    gotRespond,
+		}
+		if data, err := json.MarshalIndent(evidence, "", "  "); err == nil {
+			_ = os.WriteFile(filepath.Join(dir, "scenario5-bounded-wait-elapsed.json"), data, 0o644)
+		}
 	}
 }

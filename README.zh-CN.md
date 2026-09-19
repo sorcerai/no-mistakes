@@ -115,6 +115,7 @@ $ no-mistakes
 - **`/no-mistakes`** —— agent skill。用 `/no-mistakes <task>` 让编码 agent 完成一个任务再过网关，或用裸 `/no-mistakes` 为已提交的工作过网关。它跑完流水线、让流水线应用安全的修复，并在任何需要人来拍板的地方停下来问你。
 
 `no-mistakes init` 会为 Claude Code 及其他 agent 安装 `/no-mistakes` skill。底层上这个 skill 驱动的是 `no-mistakes axi` —— 同一套审批流程的非交互式 TOON 接口。
+对于通过 Model Context Protocol 接入的 ChatGPT、Hermes 等 agent 界面，`no-mistakes mcp serve --stdio` 提供了 [MCP 网关](https://kunchenguid.github.io/no-mistakes/guides/mcp/) 来驱动同一套交付流程。
 
 完整的首次运行走查见[快速上手](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/)。
 

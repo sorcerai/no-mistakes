@@ -585,7 +585,7 @@ Repositories the [MCP gateway](/no-mistakes/guides/mcp/) may serve.
 | Type    | `[]string` (absolute directory paths) |
 | Default | Empty - the gateway serves nothing   |
 
-`no-mistakes mcp serve --stdio` refuses every repository unless its canonical path lies under one of these roots. The path a caller passes is made absolute and its symlinks resolved before the comparison, so a link inside an allowed root that points outside it is refused rather than laundered into access. A path that escapes its root through `..`, a path that cannot be resolved, and a path that is not a git repository are all refused too - never normalized into something nearby.
+`no-mistakes mcp serve --stdio` refuses every repository unless its canonical path lies under one of these roots. The path a caller passes is made absolute and its symlinks resolved before the comparison, so a link inside an allowed root that points outside it is refused rather than laundered into access. A path that escapes its root through `..`, a path that cannot be resolved, and a path that is not a git repository are all refused too - never normalized into something nearby. The repository root itself must lie under one of these roots; allowlisting a subdirectory of a repository located outside the roots does not grant access to that repository.
 
 Containment is by path segment: `/srv/repos-archive` is not inside `/srv/repos`.
 

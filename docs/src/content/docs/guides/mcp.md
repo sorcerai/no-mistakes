@@ -66,15 +66,16 @@ mcp:
 ```
 
 Each `repo_path` a caller passes is canonicalized - made absolute, with symlinks
-resolved - and must then lie under one of those roots. A path that escapes its
-root through `..` or a symlink is refused outright; it is never quietly
-normalized back into the root. A path that is not a git repository is refused
-too.
+resolved - and must then lie under one of those roots. The repository root itself
+must lie under one of those roots: allowlisting a subdirectory inside a repository
+located outside the configured roots is refused. A path that escapes its root
+through `..` or a symlink is refused outright; it is never quietly normalized back
+into the root. A path that is not a git repository is refused too.
 
 `mcp.allowed_repo_roots` is a global-only setting with no repository
 counterpart. It decides which repositories this machine will mutate on an
 external agent's behalf, so a pushed branch has no way to widen it. See
-[Global Config](/no-mistakes/reference/global-config/).
+[Global Config](/no-mistakes/reference/global-config/#mcpallowed_repo_roots).
 
 ## The v1 tools
 
@@ -89,7 +90,11 @@ external agent's behalf, so a pushed branch has no way to widen it. See
 
 There is deliberately no merge tool, no push tool, and no abort tool. Merging is
 a human decision; publishing happens inside no-mistakes; aborting is a
-between-runs action that is easy to misuse mid-run.
+between-runs action that is easy to misuse mid-run. `nomistakes_sync` is guarded:
+call it without arguments to inspect the synchronization state; pass `apply: true`
+only when no-mistakes' reported `next_action.code` is `sync`, or `recover: true`
+(optionally with `keep_local: true`) only when it is `recover_custody`. Any other
+mutation request is refused.
 
 ### `intent` is not optional
 
@@ -161,7 +166,9 @@ Every tool returns one shape:
   ],
   "next_action": { "code": "respond", "allowed": ["approve", "fix", "skip"] },
   "automatic_skips": [],
-  "warnings": []
+  "warnings": [
+    "This gate holds findings the pipeline referred to a human; return them for a decision rather than answering them."
+  ]
 }
 ```
 
