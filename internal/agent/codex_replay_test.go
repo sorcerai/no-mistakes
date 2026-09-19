@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 func TestCodexFallbackPreservesCompletedWork(t *testing.T) {
@@ -26,6 +27,7 @@ func TestCodexFallbackPreservesCompletedWork(t *testing.T) {
 		{"quota_during_collaboration", `{"type":"item.started","item":{"id":"a","type":"collab_tool_call"}}`, "quota exhausted", false},
 		{"quota_after_unknown_update", `{"type":"item.updated","item":{"id":"a","type":"future_tool_call"}}`, "quota exhausted", false},
 		{"quota_after_malformed_record", `{"type":"item.started"`, "quota exhausted", false},
+		{"quota_after_unknown_event", `{"type":"future_tool.started","command":"write file"}`, "quota exhausted", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -67,5 +69,16 @@ func TestFallbackCancellationDoesNotStartAnotherAgent(t *testing.T) {
 	}}
 	if _, err := NewFallback([]Agent{first, second}).Run(ctx, RunOpts{}); err != failure {
 		t.Fatalf("original cancellation failure lost: %v", err)
+	}
+}
+
+func TestCodexStreamReadFailureRefusesReplay(t *testing.T) {
+	cause := errors.New("event transport failed")
+	var usage TokenUsage
+	var lastMessage, codexErr, threadID string
+	err := parseCodexEvents(context.Background(), iotest.ErrReader(cause), nil,
+		&usage, &lastMessage, &codexErr, &threadID, newCodexMetricsAccumulator())
+	if !errors.Is(err, cause) || !IsReplayUnsafeError(err) {
+		t.Fatalf("indeterminate event stream must preserve its cause and refuse replay: %v", err)
 	}
 }

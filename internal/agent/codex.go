@@ -370,14 +370,17 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 			continue // skip malformed lines
 		}
 		if metrics != nil {
-			if event.Type == "" {
-				metrics.replayUnsafe = true
-			} else if strings.HasPrefix(event.Type, "item.") {
+			switch event.Type {
+			case "thread.started", "turn.started", "turn.completed", "turn.failed", "error":
+				// Known control and failure events alone do not execute work.
+			case "item.started", "item.updated", "item.completed":
 				// Plans, reasoning and error notices do not execute work.
 				// Unknown item kinds fail closed, including future tools.
 				nonWork := event.Item != nil && (event.Item.Type == "reasoning" ||
 					event.Item.Type == "todo_list" || event.Item.Type == "error")
 				metrics.replayUnsafe = metrics.replayUnsafe || !nonWork
+			default:
+				metrics.replayUnsafe = true
 			}
 		}
 
@@ -418,7 +421,10 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 		}
 	}
 
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrReplayUnsafe, err)
+	}
+	return nil
 }
 
 func codexOutputSchema(schema json.RawMessage) ([]byte, error) {

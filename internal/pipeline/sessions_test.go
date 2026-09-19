@@ -409,3 +409,31 @@ func TestRunSessions_AgentChangeDiscardsStoredSession(t *testing.T) {
 		t.Fatalf("stored session for another agent must be discarded, got %+v", call.session)
 	}
 }
+
+func TestRunSessions_AdapterCancellationNeverReplaysWithLiveCaller(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			d, run := sessionTestDB(t)
+			fake := newFakeSessionAgent()
+			rs := NewRunSessions(d, run.ID, fake, true)
+			ctx := context.Background()
+			if _, err := rs.Run(ctx, fake, SessionRoleFixer, agent.RunOpts{Prompt: "initial"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			fake.failResumes["sess-1"] = fmt.Errorf("adapter stopped: %w", cause)
+
+			_, err := rs.Run(ctx, fake, SessionRoleFixer, agent.RunOpts{Prompt: "continue repair"}, nil)
+			if !errors.Is(err, cause) {
+				t.Fatalf("cancellation was replaced by a fresh invocation: %v", err)
+			}
+			if len(fake.calls) != 2 {
+				t.Fatalf("cancelled turn replayed: %d invocations, want initial plus one resume", len(fake.calls))
+			}
+			delete(fake.failResumes, "sess-1")
+			result, err := rs.Run(ctx, fake, SessionRoleFixer, agent.RunOpts{Prompt: "operator resumes"}, nil)
+			if err != nil || result.SessionID != "sess-1" {
+				t.Fatalf("cancelled turn lost its original session: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}

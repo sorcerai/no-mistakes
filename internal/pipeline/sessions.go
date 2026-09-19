@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -91,7 +92,8 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 		rs.remember(role, result.SessionID, sessionProvider(a, result))
 		return result, nil
 	}
-	if storedID == "" || ctx.Err() != nil || agent.IsReplayUnsafeError(err) {
+	if storedID == "" || ctx.Err() != nil || errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) || agent.IsReplayUnsafeError(err) {
 		return nil, err
 	}
 
