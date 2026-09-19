@@ -590,7 +590,14 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 		}
 	}
 
-	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, submissionHead, priorRunIDs, triggerWaitTimeout); run != nil {
+	// Only the wait window expiring (nil, nil) means no run appeared. A failed
+	// or cancelled poll proves nothing, and a rerun would duplicate the run
+	// this push may have created.
+	run, waitErr := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, submissionHead, priorRunIDs, triggerWaitTimeout)
+	if waitErr != nil {
+		return "", fmt.Errorf("wait for triggered run: %w", waitErr)
+	}
+	if run != nil {
 		if !run.PiProfile.Matches(profile) {
 			return "", fmt.Errorf("triggered run has a conflicting Pi profile")
 		}
