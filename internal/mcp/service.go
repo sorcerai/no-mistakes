@@ -150,7 +150,7 @@ func (s *Service) Run(ctx context.Context, in RunInput) *Receipt {
 	if refusal := s.refuseNested(requestCtx, OpRun, repoPath); refusal != nil {
 		return refusal
 	}
-	state, err := s.AXI.Run(requestCtx, axiapi.RunRequest{
+	state, err := s.AXI.Run(ctx, axiapi.RunRequest{
 		RepoPath: repoPath, Intent: in.Intent,
 		Skip: skip, Wait: boundedWait(in.WaitSeconds),
 	})
@@ -211,7 +211,7 @@ func (s *Service) Respond(ctx context.Context, in RespondInput) *Receipt {
 		}
 		return receipt
 	}
-	next, err := s.AXI.Respond(requestCtx, axiapi.RespondRequest{
+	next, err := s.AXI.Respond(ctx, axiapi.RespondRequest{
 		RepoPath: repoPath, RunID: state.RunID, Action: action,
 		FindingIDs: in.FindingIDs, Instructions: in.Instructions,
 		UserDecisionGiven: strings.TrimSpace(in.UserDecision) != "",

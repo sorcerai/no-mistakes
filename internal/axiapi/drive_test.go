@@ -15,7 +15,7 @@ import (
 )
 
 func TestWaitForTriggeredRunPropagatesIPCError(t *testing.T) {
-	dir, err := os.MkdirTemp("/private/tmp", "ax-")
+	dir, err := os.MkdirTemp("", "ax-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestWaitForTriggeredRunReturnsCallerDeadline(t *testing.T) {
 }
 
 func TestWaitForTriggeredRunBoundsIPCReplyByCallerDeadline(t *testing.T) {
-	dir, err := os.MkdirTemp("/private/tmp", "ax- slow-")
+	dir, err := os.MkdirTemp("", "ax-slow-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestWaitForTriggeredRunBoundsIPCReplyByCallerDeadline(t *testing.T) {
 }
 
 func TestCallIPCBoundsReplyByCallerDeadline(t *testing.T) {
-	dir, err := os.MkdirTemp("/private/tmp", "ax- callipc-")
+	dir, err := os.MkdirTemp("", "ax-callipc-")
 	if err != nil {
 		t.Fatal(err)
 	}

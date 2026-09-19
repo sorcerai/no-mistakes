@@ -95,7 +95,7 @@ func (f *fakeAXI) GateContext(ctx context.Context, repoPath string) (gatecontext
 	return f.gate, nil
 }
 
-func newService(t *testing.T, axi *fakeAXI) (*Service, string) {
+func newService(t *testing.T, axi axiapi.Service) (*Service, string) {
 	t.Helper()
 	root := t.TempDir()
 	repo := mkGitRepo(t, filepath.Join(root, "project"))
@@ -538,5 +538,126 @@ func TestDefaultBranchRefusalIsTyped(t *testing.T) {
 	}
 	if got.Error.Remediation == "" {
 		t.Error("the refusal must say what to do instead")
+	}
+}
+
+type waitElapsedFakeAXI struct {
+	fakeAXI
+}
+
+func (f *waitElapsedFakeAXI) Run(ctx context.Context, req axiapi.RunRequest) (*axiapi.RunState, error) {
+	f.runCalls = append(f.runCalls, req)
+	driveCtx, cancel := context.WithTimeout(ctx, req.Wait)
+	defer cancel()
+	select {
+	case <-driveCtx.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return &axiapi.RunState{
+			RunID:       "01WAIT",
+			Branch:      "feature/wait",
+			HeadSHA:     fullSHA,
+			Status:      string(types.RunRunning),
+			WaitElapsed: true,
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (f *waitElapsedFakeAXI) Respond(ctx context.Context, req axiapi.RespondRequest) (*axiapi.RunState, error) {
+	f.respondCalls = append(f.respondCalls, req)
+	driveCtx, cancel := context.WithTimeout(ctx, req.Wait)
+	defer cancel()
+	select {
+	case <-driveCtx.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return &axiapi.RunState{
+			RunID:       req.RunID,
+			Branch:      "feature/wait",
+			HeadSHA:     fullSHA,
+			Status:      string(types.RunRunning),
+			WaitElapsed: true,
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestRunWaitElapsedReturnsReattachReceipt(t *testing.T) {
+	axi := &waitElapsedFakeAXI{}
+	svc, repo := newService(t, axi)
+	got := svc.Run(context.Background(), RunInput{RepoPath: repo, Intent: "goal", WaitSeconds: 1})
+	if !got.OK {
+		t.Fatalf("receipt = %#v, want OK true on wait elapsed", got)
+	}
+	if got.State != StateRunning {
+		t.Errorf("state = %q, want %q", got.State, StateRunning)
+	}
+	if got.NextAction == nil || got.NextAction.Code != "reattach" {
+		t.Errorf("next_action = %#v, want code reattach", got.NextAction)
+	}
+	if len(got.Warnings) == 0 {
+		t.Error("want warning explaining wait elapsed")
+	}
+}
+
+func TestRespondWaitElapsedReturnsReattachReceipt(t *testing.T) {
+	axi := &waitElapsedFakeAXI{}
+	axi.status = &axiapi.RunState{
+		RunID:   "01WAIT",
+		HeadSHA: fullSHA,
+		Gate:    &axiapi.Gate{Step: "review"},
+	}
+	svc, repo := newService(t, axi)
+	got := svc.Respond(context.Background(), RespondInput{RepoPath: repo, Action: "approve", WaitSeconds: 1})
+	if !got.OK {
+		t.Fatalf("receipt = %#v, want OK true on wait elapsed", got)
+	}
+	if got.State != StateRunning {
+		t.Errorf("state = %q, want %q", got.State, StateRunning)
+	}
+	if got.NextAction == nil || got.NextAction.Code != "reattach" {
+		t.Errorf("next_action = %#v, want code reattach", got.NextAction)
+	}
+	if len(got.Warnings) == 0 {
+		t.Error("want warning explaining wait elapsed")
+	}
+}
+
+func TestMutatingToolsReturnPromptlyOnCancelledCaller(t *testing.T) {
+	axi := &waitElapsedFakeAXI{}
+	axi.status = &axiapi.RunState{
+		RunID:   "01WAIT",
+		HeadSHA: fullSHA,
+		Gate:    &axiapi.Gate{Step: "review"},
+	}
+	svc, repo := newService(t, axi)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(10*time.Millisecond, cancel)
+
+	started := time.Now()
+	gotRun := svc.Run(ctx, RunInput{RepoPath: repo, Intent: "goal", WaitSeconds: 1})
+	if gotRun.OK || gotRun.Error == nil || gotRun.Error.Code != CodeAXIError {
+		t.Fatalf("run receipt = %#v, want axi_error on canceled caller context", gotRun)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("run took %s, want prompt cancellation return", elapsed)
+	}
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	time.AfterFunc(10*time.Millisecond, cancel2)
+
+	started = time.Now()
+	gotRespond := svc.Respond(ctx2, RespondInput{RepoPath: repo, Action: "approve", WaitSeconds: 1})
+	if gotRespond.OK || gotRespond.Error == nil || gotRespond.Error.Code != CodeAXIError {
+		t.Fatalf("respond receipt = %#v, want axi_error on canceled caller context", gotRespond)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("respond took %s, want prompt cancellation return", elapsed)
 	}
 }
