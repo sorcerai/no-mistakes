@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -233,5 +234,38 @@ func TestTriggerRunNoOpPushWithOldTerminalRunReruns(t *testing.T) {
 	}
 	if f.reruns.Load() != 1 || f.runCount() != 2 {
 		t.Fatalf("reruns = %d, rows = %d; want exactly one rerun", f.reruns.Load(), f.runCount())
+	}
+}
+
+// Without a baseline, a fast-terminal run this push creates is
+// indistinguishable from an older one, so the poll misses it and the fallback
+// requests a second run for the same head. Refuse before pushing instead.
+func TestTriggerRunBaselineErrorDoesNotPushOrRerun(t *testing.T) {
+	f := newTriggerFixture(t, false)
+	f.freshOnFirstGet = true
+	f.failHeadRead = 1
+
+	started := time.Now()
+	runID, err := f.trigger(triggerTestContext(t))
+	if runID != "" || err == nil {
+		t.Fatalf("run ID = %q, err = %v; want refusal", runID, err)
+	}
+	for _, want := range []string{"get prior runs", "injected head read failure"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
+	if got := f.gateHead(); got != "" {
+		t.Fatalf("gate head = %q, want no push", got)
+	}
+	if f.headReads.Load() != 1 || f.activeReads.Load() != 0 || f.reruns.Load() != 0 {
+		t.Fatalf("head reads = %d, active reads = %d, reruns = %d; want 1/0/0",
+			f.headReads.Load(), f.activeReads.Load(), f.reruns.Load())
+	}
+	if f.runCount() != 1 {
+		t.Fatalf("rows = %d, want only the old run", f.runCount())
+	}
+	if elapsed := time.Since(started); elapsed >= triggerWaitTimeout {
+		t.Fatalf("refusal took %s, want it before the trigger wait", elapsed)
 	}
 }
