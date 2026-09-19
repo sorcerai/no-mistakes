@@ -458,15 +458,15 @@ func TestMCPGatewayRepositoryAllowlistAndTraversal(t *testing.T) {
 	}
 
 	writeEvidence(t, "scenario4-repo-allowlist-traversal.json", map[string]any{
-		"scenario":           "Repository allowlisting and fail-closed path canonicalization",
-		"allowed_repo":       allowedRepo,
-		"allowed_receipt":    allowedReceipt,
-		"outside_repo":       outsideRepo,
-		"outside_receipt":    outsideReceipt,
-		"traversal_path":     traversalPath,
-		"traversal_receipt":  traversalReceipt,
-		"non_git_path":       nonGitDir,
-		"non_git_receipt":    nonGitReceipt,
+		"scenario":          "Repository allowlisting and fail-closed path canonicalization",
+		"allowed_repo":      allowedRepo,
+		"allowed_receipt":   allowedReceipt,
+		"outside_repo":      outsideRepo,
+		"outside_receipt":   outsideReceipt,
+		"traversal_path":    traversalPath,
+		"traversal_receipt": traversalReceipt,
+		"non_git_path":      nonGitDir,
+		"non_git_receipt":   nonGitReceipt,
 	})
 }
 
