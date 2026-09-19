@@ -76,6 +76,7 @@ while read old new ref; do
   fi
 done
 `
+			reconcileGit(t, gateDir, "config", "core.hooksPath", filepath.Join(gateDir, "hooks"))
 			if err := os.WriteFile(filepath.Join(gateDir, "hooks", "reference-transaction"), []byte(hook), 0o755); err != nil {
 				t.Fatal(err)
 			}

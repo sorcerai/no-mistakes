@@ -32,6 +32,7 @@ func TestMirrorSettlementFailureRestoresArchivedBranch(t *testing.T) {
 			gitCmd(t, upstream, "init", "--bare")
 			gitCmd(t, dir, "push", upstream, reviewed+":refs/heads/feature")
 			hook := filepath.Join(gateDir, "hooks", "reference-transaction")
+			gitCmd(t, gateDir, "config", "core.hooksPath", filepath.Dir(hook))
 			wantError := "fetch pushed head"
 			condition := "case \"$ref\" in refs/no-mistakes/fetch/*) exit 1;; esac"
 			if failure == "recreate" {
