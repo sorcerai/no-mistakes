@@ -319,7 +319,10 @@ func ensureDaemonContext(ctx context.Context, p *paths.Paths) error {
 		return err
 	}
 	done := make(chan error, 1)
-	go func() { done <- ensureDaemon(p) }()
+	// Read the seam before spawning: the goroutine can outlive this call when
+	// the caller's deadline wins, and must not read the variable afterwards.
+	start := ensureDaemon
+	go func() { done <- start(p) }()
 	select {
 	case err := <-done:
 		return err
