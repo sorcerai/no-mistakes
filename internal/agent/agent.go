@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
@@ -18,6 +19,12 @@ import (
 )
 
 // Agent is the interface for running AI agent tasks.
+//
+// Run may return a non-nil Result together with an error: a failed or
+// cancelled invocation still carries the usage the adapter parsed, so
+// instrumentation records honest token counts instead of a fabricated zero.
+// A non-nil Result is therefore not a success signal; callers must check the
+// error.
 type Agent interface {
 	Name() string
 	Run(ctx context.Context, opts RunOpts) (*Result, error)
@@ -43,8 +50,8 @@ type RunOpts struct {
 	// a failed resume. Instrumentation only; adapters ignore it.
 	SessionFallback bool
 	// Purpose labels the pipeline duty this invocation serves (review,
-	// review-fix, test-evidence, ...). Instrumentation only; adapters
-	// ignore it.
+	// review-fix, test-evidence, ...). The review-role router uses review and
+	// review-fix to select a harness; concrete adapters ignore it.
 	Purpose string
 	// SessionFallbackReason is the low-cardinality reason a failed resume forced
 	// this fresh-session retry (see db.FallbackReason*). Set only when
@@ -59,6 +66,30 @@ type RunOpts struct {
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+}
+
+// IsStructuredOutputRejected reports whether an invocation completed but its
+// final structured response was absent, malformed, or rejected by the requested
+// schema. Callers may use this distinction to ask the same agent to correct its
+// response without treating provider, process, or timeout failures as bad JSON.
+func IsStructuredOutputRejected(err error) bool {
+	var rejection interface {
+		StructuredOutputRejected() bool
+	}
+	return errors.As(err, &rejection) && rejection.StructuredOutputRejected()
+}
+
+type structuredOutputRejection struct{ err error }
+
+func (e *structuredOutputRejection) Error() string                { return e.err.Error() }
+func (e *structuredOutputRejection) Unwrap() error                { return e.err }
+func (*structuredOutputRejection) StructuredOutputRejected() bool { return true }
+
+func rejectStructuredOutput(err error) error {
+	if err == nil || IsStructuredOutputRejected(err) {
+		return err
+	}
+	return &structuredOutputRejection{err: err}
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent
@@ -163,8 +194,8 @@ func NeutralizesGateInstructions(a Agent) bool {
 // the target checkout does not neutralize that checkout's project
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex, claude, and pi have a verified
-// neutralization knob today.
+// unneutralized in the target checkout. Only codex, claude, pi, and acp:omp have
+// a verified neutralization knob today.
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
 		return fmt.Errorf("no gate agent configured")
@@ -174,9 +205,9 @@ func EnsureGateNeutralized(a Agent) error {
 	}
 	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
 		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
-		"checkout. Only codex, claude, and pi have a verified neutralization knob (and only when it "+
-		"is not overridden by agent_args_override); set 'agent' to codex, claude, or pi in "+
-		"~/.no-mistakes/config.yaml", a.Name())
+		"checkout. Only codex, claude, pi, and acp:omp have a verified neutralization knob (and only "+
+		"when it is not overridden by agent_args_override or an acp_registry_overrides entry); set "+
+		"'agent' to codex, claude, pi, or acp:omp in ~/.no-mistakes/config.yaml", a.Name())
 }
 
 // LifecycleEvent describes process-level activity for an agent invocation.
@@ -261,10 +292,11 @@ type Options struct {
 	ACPRegistryOverrides map[string]string
 	Environment          runenv.Overlay
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
-	// claude, pi) to launch with the target repo's project-level agent
-	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
-	// from config.Config; adapters without a verified suppression knob ignore it
-	// and are refused separately by EnsureGateNeutralized when the opt-out is on.
+	// claude, pi, and the acp:omp target) to launch with the target repo's
+	// project-level agent settings/instructions suppressed. It is the resolved,
+	// trusted-only opt-out from config.Config; adapters without a verified
+	// suppression knob ignore it and are refused separately by
+	// EnsureGateNeutralized when the opt-out is on.
 	DisableProjectSettings bool
 	// Profile is the harness-neutral model/effort selection (see
 	// internal/agentcfg). NewWithOptions maps it down to whatever mechanism the
@@ -276,20 +308,67 @@ type Options struct {
 	Profile agentcfg.Profile
 }
 
+// resultFromUsage returns a Result carrying the adapter's parsed usage so a
+// failed or cancelled invocation can still record honest token counts. Nil
+// when the adapter did not report usage, which recording stores as unknown
+// rather than a fabricated zero.
+func resultFromUsage(usage TokenUsage) *Result {
+	if !usage.Reported && !usage.CacheCreationReported {
+		return nil
+	}
+	return &Result{
+		Usage:                 usage,
+		UsageReported:         usage.Reported,
+		CacheCreationReported: usage.CacheCreationReported,
+	}
+}
+
+// failedResult returns the Result a failed turn should carry: the adapter's
+// parsed usage, plus the session the turn actually ran in. The served session
+// justifies a Result on its own, because one that differs from the requested
+// session is proof of a silent replacement whether or not the turn failed, and
+// resultFromUsage returns nil when the adapter reported no usage at all.
+func failedResult(usage TokenUsage, sessionID string) *Result {
+	res := resultFromUsage(usage)
+	if sessionID == "" {
+		return res
+	}
+	if res == nil {
+		res = &Result{}
+	}
+	res.SessionID = sessionID
+	return res
+}
+
+func textResult(text string, usage TokenUsage) *Result {
+	return &Result{
+		Text:                  text,
+		Usage:                 usage,
+		UsageReported:         usage.Reported,
+		CacheCreationReported: usage.CacheCreationReported,
+	}
+}
+
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if text == "" {
-		return nil, fmt.Errorf("%s returned no text output", agentName)
+		err := fmt.Errorf("%s returned no text output", agentName)
+		if len(schema) > 0 {
+			return resultFromUsage(usage), rejectStructuredOutput(err)
+		}
+		return resultFromUsage(usage), err
 	}
 	if len(schema) == 0 {
-		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
+		return textResult(text, usage), nil
 	}
 
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		return nil, fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text))
+		return resultFromUsage(usage), rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
 	}
 
-	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
+	res := textResult(text, usage)
+	res.Output = output
+	return res, nil
 }
 
 // outputSnippet returns a trimmed, length-capped excerpt of agent output for
@@ -546,15 +625,26 @@ func indexJSONFenceClose(text string) (int, int) {
 	return -1, -1
 }
 
+// bareObject is one balanced {...} span found outside code fences, with the
+// schema-validated object (nil when the span failed validation) and its byte
+// span.
+type bareObject struct {
+	obj        json.RawMessage
+	raw        []byte
+	startIndex int
+	endIndex   int
+}
+
 // bareJSONObjects scans text for balanced {...} substrings outside code fences
 // that parse as JSON and validate against the schema. Only concluding objects
 // are candidates; an incidental object followed by substantive prose is not a
-// verdict.
+// verdict, and provider protocol residue after a complete object is. A single
+// answer split across adjacent objects - nothing between them but whitespace or
+// a single comma - is returned as their union when their keys are disjoint and
+// the union validates (see fuseAdjacentBareObjects).
 func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, error) {
-	var valid []struct {
-		obj      json.RawMessage
-		endIndex int
-	}
+	var valid []bareObject
+	var objects []bareObject
 	var lastErr error
 	for i := 0; i < len(text); i++ {
 		if strings.HasPrefix(text[i:], "```") {
@@ -578,29 +668,184 @@ func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, er
 			continue
 		}
 		candidate := text[i:end]
+		entry := bareObject{raw: []byte(candidate), startIndex: i, endIndex: end}
 		obj, err := parseStructuredCandidate([]byte(candidate), schema)
 		if err == nil {
-			valid = append(valid, struct {
-				obj      json.RawMessage
-				endIndex int
-			}{obj: obj, endIndex: end})
+			entry.obj = obj
+			valid = append(valid, entry)
 			lastErr = nil
 		} else if lastErr == nil {
 			lastErr = err
 		}
+		objects = append(objects, entry)
 		i = end - 1
 	}
 	if len(valid) > 1 {
-		objects := make([]json.RawMessage, 0, len(valid))
+		parsed := make([]json.RawMessage, 0, len(valid))
 		for _, candidate := range valid {
-			objects = append(objects, candidate.obj)
+			parsed = append(parsed, candidate.obj)
 		}
-		return objects, nil
+		return parsed, nil
 	}
-	if len(valid) == 1 && strings.TrimSpace(text[valid[0].endIndex:]) == "" {
+	if len(valid) == 1 && trailingNonJSONResidue(text[valid[0].endIndex:]) {
 		return []json.RawMessage{valid[0].obj}, nil
 	}
+	if len(valid) == 0 {
+		fused, err := fuseAdjacentBareObjects(text, objects, schema)
+		if err != nil {
+			return nil, err
+		}
+		if fused != nil {
+			return []json.RawMessage{fused}, nil
+		}
+	}
 	return nil, lastErr
+}
+
+// trailingNonJSONResidue reports whether rest - the text following a single
+// schema-valid bare object - is provider protocol residue rather than a second
+// structured answer or a prose continuation. Providers occasionally append
+// stray closing tool-call delimiters after a complete JSON object (DeepSeek's
+// DSML markers with full-width separators are the observed case). A prose
+// sentence, or anything containing another JSON object or a code fence, is
+// never treated as residue.
+func trailingNonJSONResidue(rest string) bool {
+	trimmed := strings.TrimSpace(rest)
+	if trimmed == "" {
+		return true
+	}
+	if strings.Contains(rest, "{") || strings.Contains(rest, "```") {
+		return false
+	}
+	for _, token := range strings.Fields(trimmed) {
+		if isProtocolResidueToken(token) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// isProtocolResidueToken accepts one whitespace-delimited piece of provider
+// tool-protocol residue: markup whose text outside its tags carries no letters
+// or digits, such as a closing delimiter </invoke> or </parameter> (optionally
+// carrying DeepSeek's full-width DSML separators), or a run of punctuation with
+// no letters or digits at all, such as a stray closing brace. Markup that wraps
+// real content - <b>note</b>, 1<2>0 - and every ordinary prose word is not
+// residue, so a prose continuation is still rejected.
+func isProtocolResidueToken(token string) bool {
+	rest, sawTag := stripMarkupTags(token)
+	if !sawTag {
+		return !containsAlphanumeric(token)
+	}
+	return !containsAlphanumeric(rest)
+}
+
+// stripMarkupTags removes every <...> span from token and reports whether it
+// found at least one.
+func stripMarkupTags(token string) (string, bool) {
+	var rest strings.Builder
+	sawTag := false
+	for i := 0; i < len(token); {
+		if token[i] == '<' {
+			if end := strings.IndexByte(token[i:], '>'); end >= 0 {
+				sawTag = true
+				i += end + 1
+				continue
+			}
+		}
+		rest.WriteByte(token[i])
+		i++
+	}
+	return rest.String(), sawTag
+}
+
+func containsAlphanumeric(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r)
+	})
+}
+
+// errSplitBareObjects marks a split answer whose adjacent objects have disjoint
+// keys but still do not validate once merged (the model left the answer
+// incomplete). It is deliberately distinct from a generic schema error so the
+// retry classifier can retry it: the step's real work is done and only the
+// final text shape is wrong.
+var errSplitBareObjects = errors.New("split bare JSON objects could not be fused into one valid object")
+
+// errDuplicateBareObjectKey marks adjacent bare objects that share a top-level
+// key. That is competing values for one field rather than halves of one answer,
+// so it stays terminal and is never retried.
+var errDuplicateBareObjectKey = errors.New("adjacent bare JSON objects share a top-level key")
+
+// fuseAdjacentBareObjects merges runs of adjacent top-level objects whose keys
+// are disjoint, returning the merged object when it validates against the full
+// schema. Models sometimes split one structured answer across two objects (for
+// example {"findings":...} then {"risk_level":...}); each half fails
+// validation alone while the union satisfies it. Adjacent means nothing
+// separates the objects but whitespace or a single comma, and no key may repeat
+// across the run, so two competing verdicts embedded in prose are never fused.
+// A run counts only when it is concluding, on the same rule as the
+// single-object path: anything other than protocol residue after the run means
+// the objects were quoted mid-answer, not answered. A concluding run that
+// cannot be fused reports errSplitBareObjects rather than the generic schema
+// error. A run whose keys repeat is competing values, not a recoverable split,
+// and falls through to the generic schema error so it stays terminal.
+func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawMessage) (json.RawMessage, error) {
+	for i := 0; i < len(objects); {
+		j := i
+		for j+1 < len(objects) && isBareObjectSeparator(text[objects[j].endIndex:objects[j+1].startIndex]) {
+			j++
+		}
+		if j > i && trailingNonJSONResidue(text[objects[j].endIndex:]) {
+			fused, err := fuseBareObjects(objects[i:j+1], schema)
+			if err == nil {
+				return fused, nil
+			}
+			if errors.Is(err, errSplitBareObjects) {
+				return nil, errSplitBareObjects
+			}
+			// Competing values for one key, or a span that is not a JSON object
+			// at all: not a recoverable split, so fall through to the generic
+			// schema error and stay terminal.
+			return nil, nil
+		}
+		i = j + 1
+	}
+	return nil, nil
+}
+
+// isBareObjectSeparator reports whether the text between two bare objects marks
+// them as halves of one split answer rather than separate statements: nothing
+// but whitespace, or a single comma.
+func isBareObjectSeparator(gap string) bool {
+	trimmed := strings.TrimSpace(gap)
+	return trimmed == "" || trimmed == ","
+}
+
+func fuseBareObjects(objects []bareObject, schema json.RawMessage) (json.RawMessage, error) {
+	merged := make(map[string]json.RawMessage)
+	for _, object := range objects {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(object.raw, &fields); err != nil {
+			return nil, err
+		}
+		for key, value := range fields {
+			if _, exists := merged[key]; exists {
+				return nil, errDuplicateBareObjectKey
+			}
+			merged[key] = value
+		}
+	}
+	fused, err := json.Marshal(merged)
+	if err != nil {
+		return nil, err
+	}
+	out, err := parseStructuredCandidate(fused, schema)
+	if err != nil {
+		return nil, errSplitBareObjects
+	}
+	return out, nil
 }
 
 func jsonEqual(a, b json.RawMessage) bool {
@@ -1058,7 +1303,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	}
 	if target, ok := types.ACPTargetFor(name); ok {
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
-		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, subprocessContext: newSubprocessContext(opts.Environment)}, nil
+		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	}
 	// Mapped flags follow the operator's raw agent_args_override flags, so they
 	// still precede no-mistakes' managed flags in every adapter's argv. A knob

@@ -9,12 +9,14 @@ import (
 
 // azPR is the subset of `az repos pr show/list/create` JSON output we consume.
 type azPR struct {
-	PullRequestID int    `json:"pullRequestId"`
-	Status        string `json:"status"`      // active | completed | abandoned
-	MergeStatus   string `json:"mergeStatus"` // notSet | queued | conflicts | succeeded | rejectedByPolicy | failure
-	SourceRefName string `json:"sourceRefName"`
-	TargetRefName string `json:"targetRefName"`
-	URL           string `json:"url"` // _apis/... endpoint - NOT browsable
+	Title         string  `json:"title"`
+	Description   *string `json:"description"`
+	PullRequestID int     `json:"pullRequestId"`
+	Status        string  `json:"status"`      // active | completed | abandoned
+	MergeStatus   string  `json:"mergeStatus"` // notSet | queued | conflicts | succeeded | rejectedByPolicy | failure
+	SourceRefName string  `json:"sourceRefName"`
+	TargetRefName string  `json:"targetRefName"`
+	URL           string  `json:"url"` // _apis/... endpoint - NOT browsable
 	Repository    struct {
 		Name    string `json:"name"`
 		WebURL  string `json:"webUrl"` // .../_git/{repo} - browsable base
@@ -27,6 +29,7 @@ type azPR struct {
 // policyEval is the subset of `az repos pr policy list` evaluation records we
 // consume. Branch policy evaluations are Azure DevOps's equivalent of PR checks.
 type policyEval struct {
+	EvaluationID  string `json:"evaluationId"`
 	Status        string `json:"status"` // queued | running | approved | rejected | notApplicable | broken
 	StartedDate   string `json:"startedDate"`
 	CompletedDate string `json:"completedDate"`

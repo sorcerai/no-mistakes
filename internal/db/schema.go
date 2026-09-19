@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS runs (
     push_generation         INTEGER,
     push_active             INTEGER NOT NULL DEFAULT 0,
     terminal_head_verified_at INTEGER,
+    gates_json              TEXT,
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_intent_digest TEXT,
     launch_receipt_claimed_at INTEGER,
     pr_base_branch       TEXT,
+    pi_profile           TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -84,6 +86,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     selected_finding_ids TEXT,
     selection_source     TEXT,
     fix_summary          TEXT,
+    repair_published     INTEGER NOT NULL DEFAULT 0,
     duration_ms          INTEGER NOT NULL,
     created_at           INTEGER NOT NULL
 );
@@ -202,10 +205,13 @@ CREATE TABLE IF NOT EXISTS uncertified_pipeline_ranges (
 // were created before the referenced columns existed. Each statement must be
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
+	`ALTER TABLE runs ADD COLUMN pi_profile TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_pi_profile_immutable BEFORE UPDATE OF pi_profile ON runs WHEN NEW.pi_profile IS NOT OLD.pi_profile BEGIN SELECT RAISE(ABORT, 'run Pi profile is immutable'); END`,
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN repair_published INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_rounds ADD COLUMN user_findings_json TEXT`,
 	// A parked round may retain the reviewed commit as a non-authoritative
 	// candidate. Only atomic review completion promotes it onto the run.
@@ -281,6 +287,14 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
+	// The repository-declared extra gates this run resolved at creation. It is
+	// durable for the same reason worktree_dir is: the gates come from the
+	// trusted default branch, which may gain or lose one while a run is parked,
+	// and recovery re-deriving them would rebuild a step sequence the run never
+	// executed - failing an otherwise healthy parked run as a crash. NULL and
+	// empty both mean the bare core pipeline, which is the only sequence a row
+	// written before this column existed can have had.
+	`ALTER TABLE runs ADD COLUMN gates_json TEXT`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN ci_fix_attempts INTEGER NOT NULL DEFAULT 0`,
 	// Non-nil exactly when a human answered ActionApprove on a step whose gate
@@ -312,4 +326,5 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_files INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
+	`ALTER TABLE step_results ADD COLUMN approval_reason TEXT`,
 }
