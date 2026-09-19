@@ -202,12 +202,12 @@ func TestReceiptWaitElapsedIsNotAFailure(t *testing.T) {
 
 func TestReceiptWaitElapsedPreservesSettledState(t *testing.T) {
 	for name, tc := range map[string]struct {
-		state             *axiapi.RunState
+		state               *axiapi.RunState
 		wantState, wantNext string
 	}{
 		"terminal": {state: &axiapi.RunState{RunID: "01ABC", Terminal: true, Outcome: StatePassed, WaitElapsed: true}, wantState: StatePassed},
 		"ci ready": {state: &axiapi.RunState{RunID: "01ABC", CIReady: true, WaitElapsed: true}, wantState: StateChecksPassed, wantNext: "await_human_merge"},
-		"gate": {state: &axiapi.RunState{RunID: "01ABC", Gate: &axiapi.Gate{Step: "test"}, WaitElapsed: true}, wantState: StateAwaitingDecision, wantNext: "respond"},
+		"gate":     {state: &axiapi.RunState{RunID: "01ABC", Gate: &axiapi.Gate{Step: "test"}, WaitElapsed: true}, wantState: StateAwaitingDecision, wantNext: "respond"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := decode(t, NewReceipt(OpRun, "/repos/x", tc.state))
