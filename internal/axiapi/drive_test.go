@@ -119,10 +119,18 @@ func TestWaitForTriggeredRunFindsNewRunAfterPriorRun(t *testing.T) {
 }
 
 func TestWaitForTriggeredRunReturnsCallerDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	// A deadline already in the past cancels synchronously inside
+	// WithDeadline, so ctx.Err() is set before waitForTriggeredRun runs.
+	// WithTimeout(time.Nanosecond) only sets it once its timer fires, which a
+	// short sleep does not guarantee on a coarse-granularity platform
+	// (Windows defaults to ~15.6ms). When the timer had not fired, the loop's
+	// ctx.Err() guard saw nil and reached the IPC call, dereferencing the nil
+	// client below and panicking - a flake, not a product fault.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	time.Sleep(time.Millisecond)
 
+	// The nil client is the assertion: caller expiry must be returned before
+	// any IPC call is attempted.
 	_, err := waitForTriggeredRun(ctx, nil, "repo", "branch", "head", nil)
 	if !errors.Is(err, context.DeadlineExceeded) && !ipc.IsCallTimeout(err) {
 		t.Fatalf("error = %v, want caller deadline", err)
