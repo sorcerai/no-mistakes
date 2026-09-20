@@ -230,6 +230,15 @@ bounded wait - at a gate, terminal outcome, or CI-ready state - the receipt
 preserves that settled state and its next action instead. A bounded wait is
 never itself a failure or a terminal state.
 
+When `nomistakes_run` starts a fresh run, the gateway records which runs already
+exist for the submitted head before pushing to the gate. If the caller's clean
+HEAD changes while that inspection is in flight, it takes a second baseline for
+the head it will actually submit. A failure in either baseline lookup refuses
+the push. After the push, the gateway waits only for a run that was not in the
+baseline; a failed or cancelled poll returns an error instead of falling back to
+a rerun that could duplicate the run the push created. If both the push and the
+poll fail, the error reports both causes.
+
 ## The agent loop
 
 ```text
