@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/axiapi"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -16,7 +17,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
-	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"github.com/spf13/cobra"
 )
@@ -236,26 +236,13 @@ func doctorForgeProfiles(
 	return allOK
 }
 
+// doctorAgentChecks reads the supported-agent inventory from internal/axiapi,
+// which owns it for every surface that reports agent availability.
 func doctorAgentChecks() []doctorAgentCheck {
-	agents := []doctorAgentCheck{
-		{"claude", []string{"claude"}},
-		{"codex", []string{"codex"}},
-		{"grok", []string{"grok"}},
-		{"rovodev", []string{"acli"}},
-		{"opencode", []string{"opencode"}},
-		{"pi", []string{"pi"}},
-		{"copilot", []string{"copilot"}},
-		{"antigravity", []string{"agy"}},
-		{"acpx", []string{"acpx"}},
-	}
-	for _, alias := range types.ACPAliases() {
-		agents = append(agents, doctorAgentCheck{
-			name: string(alias.Name),
-			binaries: []string{
-				alias.DefaultCommandBinary(),
-				"acpx",
-			},
-		})
+	candidates := axiapi.AgentCandidates()
+	agents := make([]doctorAgentCheck, 0, len(candidates))
+	for _, candidate := range candidates {
+		agents = append(agents, doctorAgentCheck{name: candidate.Name, binaries: candidate.Binaries})
 	}
 	return agents
 }

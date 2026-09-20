@@ -85,6 +85,22 @@ func TestBuildTestingSummary_NoGoVerdictIsVisible(t *testing.T) {
 	}
 }
 
+func TestBuildTestingSummary_NoSurfaceVerdictIsVisible(t *testing.T) {
+	t.Parallel()
+	findingsJSON := liveValidatedFindingsJSON(t, []types.TestScenario{
+		{Name: "Windows git-heavy shard runs the git-backed packages", Result: types.ScenarioResultUntested, Reason: "CI workflow YAML has no running product no-mistakes can drive"},
+	}, types.TestVerdictNoSurface)
+	steps, rounds := testStepWithFindings(t, findingsJSON)
+
+	md := BuildTestingSummary(steps, rounds)
+	if !strings.Contains(md, "Live validation: ⚠️ no-surface - 0 of 1 scenarios driven live against the product") {
+		t.Errorf("expected the no-surface verdict rendered, got:\n%s", md)
+	}
+	if !strings.Contains(md, "| Windows git-heavy shard runs the git-backed packages | ⏸️ untested | no | CI workflow YAML has no running product no-mistakes can drive |") {
+		t.Errorf("expected the untested no-surface row, got:\n%s", md)
+	}
+}
+
 // A run recorded before the contract existed carries neither scenarios nor a
 // verdict. It must render exactly as it always did rather than growing an
 // empty table or claiming "no verdict recorded" where there is nothing to say.
@@ -110,7 +126,7 @@ func TestBuildPipelineSummary_OmitsLiveValidationAfterHeadChanges(t *testing.T) 
 	}, types.TestVerdictGo)
 	steps, rounds := testStepWithFindings(t, findingsJSON)
 
-	attestation := newPipelineAttestation(steps, rounds, strings.Repeat("ab", 20))
+	attestation := newPipelineAttestation(steps, rounds, strings.Repeat("ab", 20), pipelineAttestationPolicy{})
 	if attestation.LiveValidation != nil {
 		t.Fatalf("later head carried stale live validation: %+v", attestation.LiveValidation)
 	}

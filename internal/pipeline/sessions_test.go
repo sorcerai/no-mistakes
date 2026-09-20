@@ -206,6 +206,28 @@ func TestRunSessions_ResumeFailureFallsBackToFreshSameRoleSession(t *testing.T) 
 	}
 }
 
+// TestRunSessions_ReplayUnsafeResumeFailureDoesNotFallback proves an agent
+// that observed work during a resumed turn is never replayed in a fresh
+// session by the outer durable-session fallback.
+func TestRunSessions_ReplayUnsafeResumeFailureDoesNotFallback(t *testing.T) {
+	d, run := sessionTestDB(t)
+	fake := newFakeSessionAgent()
+	rs := NewRunSessions(d, run.ID, fake, true)
+
+	if _, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "initial fix"}, nil); err != nil {
+		t.Fatalf("initial: %v", err)
+	}
+	fake.failResumes["sess-1"] = fmt.Errorf("%w: provider stopped after tool activity", agent.ErrReplayUnsafe)
+
+	_, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "resume fix"}, nil)
+	if err == nil || !agent.IsReplayUnsafeError(err) {
+		t.Fatalf("replay-unsafe resume failure must propagate, got %v", err)
+	}
+	if len(fake.calls) != 2 {
+		t.Fatalf("replay-unsafe resume must not start a fresh session, got %d calls", len(fake.calls))
+	}
+}
+
 // TestRunSessions_FreshSessionFailurePropagates proves a failure that was not
 // a resume (nothing to fall back from) surfaces to the caller unchanged.
 func TestRunSessions_FreshSessionFailurePropagates(t *testing.T) {
@@ -385,5 +407,33 @@ func TestRunSessions_AgentChangeDiscardsStoredSession(t *testing.T) {
 	}
 	if call := fake.calls[0]; call.session == nil || call.session.ID != "" {
 		t.Fatalf("stored session for another agent must be discarded, got %+v", call.session)
+	}
+}
+
+func TestRunSessions_AdapterCancellationNeverReplaysWithLiveCaller(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			d, run := sessionTestDB(t)
+			fake := newFakeSessionAgent()
+			rs := NewRunSessions(d, run.ID, fake, true)
+			ctx := context.Background()
+			if _, err := rs.Run(ctx, fake, SessionRoleFixer, agent.RunOpts{Prompt: "initial"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			fake.failResumes["sess-1"] = fmt.Errorf("adapter stopped: %w", cause)
+
+			_, err := rs.Run(ctx, fake, SessionRoleFixer, agent.RunOpts{Prompt: "continue repair"}, nil)
+			if !errors.Is(err, cause) {
+				t.Fatalf("cancellation was replaced by a fresh invocation: %v", err)
+			}
+			if len(fake.calls) != 2 {
+				t.Fatalf("cancelled turn replayed: %d invocations, want initial plus one resume", len(fake.calls))
+			}
+			delete(fake.failResumes, "sess-1")
+			result, err := rs.Run(ctx, fake, SessionRoleFixer, agent.RunOpts{Prompt: "operator resumes"}, nil)
+			if err != nil || result.SessionID != "sess-1" {
+				t.Fatalf("cancelled turn lost its original session: result=%+v err=%v", result, err)
+			}
+		})
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/axiapi"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -121,6 +122,14 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			piProfile, err := parsePiProfilePushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
+			reconciledPreviousHead, err := parseReconciledPreviousHeadPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -139,15 +148,17 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:                 gatePath,
-				Ref:                  ref,
-				Old:                  oldSHA,
-				New:                  newSHA,
-				SkipSteps:            skipSteps,
-				Intent:               intent,
-				LaunchNonce:          launchNonce,
-				ValidationGeneration: validationGeneration,
-				PRBaseBranch:         prBaseBranch,
+				Gate:                   gatePath,
+				Ref:                    ref,
+				Old:                    oldSHA,
+				New:                    newSHA,
+				SkipSteps:              skipSteps,
+				Intent:                 intent,
+				LaunchNonce:            launchNonce,
+				ValidationGeneration:   validationGeneration,
+				PRBaseBranch:           prBaseBranch,
+				PiProfile:              piProfile,
+				ReconciledPreviousHead: reconciledPreviousHead,
 			}, &result)
 		},
 	}
@@ -207,29 +218,21 @@ func parseSkipSteps(value string) ([]types.StepName, error) {
 	return dedupeSteps(steps), nil
 }
 
-// intentPushOptionPrefix carries an agent-supplied intent through a git push.
-// The value is base64-encoded so multi-line or special-character intents
-// survive the push-option transport (which is line-oriented).
-const intentPushOptionPrefix = "no-mistakes.intent="
-
+// The push-option vocabulary these parsers read is owned by internal/axiapi,
+// which formats it for both AXI launchers. Only the receive-hook side lives
+// here.
 const (
-	launchNoncePushOptionPrefix          = "no-mistakes.launch-nonce="
-	validationGenerationPushOptionPrefix = "no-mistakes.validation-generation="
+	intentPushOptionPrefix               = axiapi.IntentPushOptionPrefix
+	launchNoncePushOptionPrefix          = axiapi.LaunchNoncePushOptionPrefix
+	validationGenerationPushOptionPrefix = axiapi.ValidationGenerationPushOptionPrefix
 )
 
 func formatLaunchNoncePushOption(nonce string) string {
-	return formatOpaquePushOption(launchNoncePushOptionPrefix, nonce)
+	return axiapi.FormatLaunchNoncePushOption(nonce)
 }
 
 func formatValidationGenerationPushOption(generation string) string {
-	return formatOpaquePushOption(validationGenerationPushOptionPrefix, generation)
-}
-
-func formatOpaquePushOption(prefix, value string) string {
-	if value == "" {
-		return ""
-	}
-	return prefix + base64.StdEncoding.EncodeToString([]byte(value))
+	return axiapi.FormatValidationGenerationPushOption(generation)
 }
 
 func parseLaunchNoncePushOptions(options []string) (string, error) {
@@ -263,15 +266,10 @@ func parseOpaquePushOptions(options []string, prefix, label string) (string, err
 }
 
 // prBaseBranchPushOptionPrefix carries a per-run PR base branch through a git push.
-const prBaseBranchPushOptionPrefix = "no-mistakes.pr-base-branch="
+const prBaseBranchPushOptionPrefix = axiapi.PRBaseBranchPushOptionPrefix
 
-// formatIntentPushOption encodes intent as a single push option, or returns ""
-// when there is no intent to carry.
 func formatIntentPushOption(intent string) string {
-	if strings.TrimSpace(intent) == "" {
-		return ""
-	}
-	return intentPushOptionPrefix + base64.StdEncoding.EncodeToString([]byte(intent))
+	return axiapi.FormatIntentPushOption(intent)
 }
 
 // parseIntentPushOptions extracts and decodes the intent push option, if any.
@@ -292,14 +290,8 @@ func parseIntentPushOptions(options []string) (string, error) {
 	return intent, nil
 }
 
-// formatPRBaseBranchPushOption encodes a per-run PR base branch as a push
-// option, or returns "" when unset.
 func formatPRBaseBranchPushOption(branch string) string {
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return ""
-	}
-	return prBaseBranchPushOptionPrefix + branch
+	return axiapi.FormatPRBaseBranchPushOption(branch)
 }
 
 // parsePRBaseBranchPushOptions extracts the per-run PR base branch push option,
@@ -319,15 +311,52 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 	return branch, nil
 }
 
+// reconciledPreviousHeadPushOptionPrefix carries the pre-reconciliation private
+// mirror head through a git push. A reconciled branch is deleted and re-created
+// by that push, so the hook sees no previous head of its own.
+const reconciledPreviousHeadPushOptionPrefix = axiapi.ReconciledPreviousHeadPushOptionPrefix
+
+// formatReconciledPreviousHeadPushOption encodes the archived pre-reconciliation
+// head as a push option, or returns "" when nothing was reconciled.
+func formatReconciledPreviousHeadPushOption(head string) string {
+	return axiapi.FormatReconciledPreviousHeadPushOption(head)
+}
+
+// parseReconciledPreviousHeadPushOptions extracts the pre-reconciliation head
+// push option, if any. The last occurrence wins. The value is only a claim: the
+// daemon accepts it solely when the gate's own archive tag records it.
+func parseReconciledPreviousHeadPushOptions(options []string) (string, error) {
+	head := ""
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, reconciledPreviousHeadPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if !isHexCommitSHA(value) {
+			return "", fmt.Errorf("reconciled previous head push option must be a commit SHA")
+		}
+		head = value
+	}
+	return head, nil
+}
+
+func isHexCommitSHA(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func formatSkipPushOptions(steps []types.StepName) []string {
-	if len(steps) == 0 {
-		return nil
-	}
-	parts := make([]string, 0, len(steps))
-	for _, step := range dedupeSteps(steps) {
-		parts = append(parts, string(step))
-	}
-	return []string{"no-mistakes.skip=" + strings.Join(parts, ",")}
+	return axiapi.FormatSkipPushOptions(steps)
 }
 
 func validStep(step types.StepName) bool {
@@ -337,6 +366,15 @@ func validStep(step types.StepName) bool {
 		}
 	}
 	return false
+}
+
+// validReadableStep accepts everything a run can have recorded a step log for,
+// which includes the repository's own gates. Read-only surfaces use this;
+// validStep stays the stricter answer for anything that CHANGES what a run
+// does. In particular `no-mistakes.skip=` must never accept a gate name, or a
+// pushed branch could switch off the maintainer's extra check by push option.
+func validReadableStep(step types.StepName) bool {
+	return validStep(step) || step.IsCustomGate()
 }
 
 func dedupeSteps(steps []types.StepName) []types.StepName {

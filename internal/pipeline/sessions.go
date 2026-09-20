@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -91,12 +92,14 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 		rs.remember(role, result.SessionID, sessionProvider(a, result))
 		return result, nil
 	}
-	if storedID == "" || ctx.Err() != nil {
+	if storedID == "" || ctx.Err() != nil || errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) || agent.IsReplayUnsafeError(err) {
 		return nil, err
 	}
 
 	// The resume attempt failed. Never skip the turn: drop the dead identity
-	// and re-run the same turn in a fresh same-role session.
+	// and re-run the same turn in a fresh same-role session, unless the failed
+	// invocation is replay-unsafe because it already performed observable work.
 	if logf != nil {
 		logf(fmt.Sprintf("resume of %s session failed (%v); starting a fresh %s session", role, err, role))
 	}

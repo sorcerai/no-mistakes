@@ -13,6 +13,15 @@ import (
 // returning a short human-readable label for telemetry.
 type retryClassifier func(error) (label string, retry bool)
 
+// ErrReplayUnsafe marks an invocation that has already performed observable
+// work. Neither a fresh retry nor a different backend may replay its prompt.
+var ErrReplayUnsafe = errors.New("agent already performed work; automatic replay refused")
+
+// IsReplayUnsafeError reports whether err carries the replay-safety marker.
+func IsReplayUnsafeError(err error) bool {
+	return errors.Is(err, ErrReplayUnsafe)
+}
+
 // transientBackoff is the package-level sleep function used between retries.
 // It is overridden in tests to keep them fast while preserving cancellation
 // semantics.
@@ -65,11 +74,12 @@ func runWithRetry(
 ) (*Result, error) {
 	var lastErr error
 	var lastLabel string
+	var lastResult *Result
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			emitAgentRetry(opts, name, lastLabel, attempt+1, maxRetries+1)
 			if err := transientBackoff(ctx, attempt); err != nil {
-				return nil, err
+				return lastResult, err
 			}
 		}
 		startedAt := time.Now()
@@ -78,9 +88,10 @@ func runWithRetry(
 		if err == nil {
 			return result, nil
 		}
+		lastResult = result
 		label, retry := classify(err)
 		if !retry {
-			return nil, err
+			return result, err
 		}
 		if recoverRetry != nil {
 			recoverRetry(label)
@@ -88,7 +99,7 @@ func runWithRetry(
 		lastErr = err
 		lastLabel = label
 	}
-	return nil, lastErr
+	return lastResult, lastErr
 }
 
 func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, startedAt, completedAt time.Time) {
@@ -153,6 +164,16 @@ var transientNeedles = []struct {
 	// emits one malformed call; the step work is usually already complete.
 	{"declaring permissions", "agy permission declaration"},
 	{"invalid tool call", "invalid tool call"},
+	// Provider tool-protocol residue after a complete JSON object, or a
+	// structured answer split across two adjacent objects the parser could not
+	// fuse: in each case the step's real work is done and only the final text
+	// shape is wrong. Same rationale as the prose needle above. Generic schema
+	// validation failures stay non-transient (see the schema_validation
+	// negative case), and so do two objects that each validate on their own,
+	// which are competing verdicts rather than one split answer; only these two
+	// parse-specific strings are added.
+	{"invalid character '<' after top-level value", "provider protocol residue after JSON"},
+	{"split bare json objects could not be fused into one valid object", "unfused split bare JSON objects"},
 }
 
 var terminalNeedles = []struct {
@@ -178,7 +199,7 @@ func classifyTransient(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || IsReplayUnsafeError(err) {
 		return "", false
 	}
 	msg := strings.ToLower(err.Error())

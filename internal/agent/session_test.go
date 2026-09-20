@@ -104,7 +104,7 @@ func TestParseClaudeEvents_SessionIDFallsBackToLastSeen(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_Resume(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("/tmp/schema.json", "thread-99")
+	args := ca.buildArgs("/tmp/schema.json", "thread-99", "")
 
 	joined := strings.Join(args, " ")
 	if !strings.HasPrefix(joined, "exec resume thread-99 ") {
@@ -131,7 +131,7 @@ func TestCodexAgent_BuildArgs_Resume(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_ResumeKeepsExtraArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.2-codex"}}
-	args := ca.buildArgs("", "thread-1")
+	args := ca.buildArgs("", "thread-1", "")
 
 	joined := strings.Join(args, " ")
 	if !strings.HasPrefix(joined, "exec resume -m gpt-5.2-codex thread-1 -") {

@@ -1,0 +1,534 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
+
+// mcpIntent is distinctive so the journey can prove the caller's own words
+// reached the pipeline rather than being inferred from a transcript.
+const mcpIntent = "expose the gateway behind the agent surface without direct forge writes"
+
+// mcpScenario parks the review step on one ask-user finding - the case the
+// gateway must refuse to answer on its own - and lets every other step pass.
+func mcpScenario(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "mcp-scenario.yaml")
+	content := `actions:
+  - match: "Review the code changes and return structured findings"
+    text: "review needs a human decision"
+    structured:
+      findings:
+        - id: "mcp-1"
+          severity: warning
+          file: "feature.txt"
+          line: 1
+          description: "two behaviours are defensible here; a maintainer must choose"
+          action: ask-user
+      summary: "found 1 issue"
+      risk_level: medium
+      risk_rationale: "behaviour choice needs a human"
+      risk_scope: source-or-external
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
+      tested:
+        - "fakeagent: simulated test run"
+      testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
+      artifacts: []
+      title: "feat: mcp gateway"
+      body: "## Summary\nfakeagent canned PR body"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write mcp scenario: %v", err)
+	}
+	return path
+}
+
+func mcpTestExceptionScenario(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "mcp-test-exception.yaml")
+	content := `actions:
+  - match: "You are validating a code change by driving the product itself."
+    text: "the live surface is inconclusive"
+    structured:
+      findings: []
+      summary: "the live surface is inconclusive"
+      tested: ["fakeagent: simulated scenario"]
+      testing_summary: "the scenario could not be driven"
+      artifacts: []
+      verdict: inconclusive
+      scenarios:
+        - name: "fakeagent: simulated scenario"
+          result: untested
+          live: false
+          evidence: "fakeagent: not driven"
+          reason: "the fixture has no live surface"
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "synthetic clean response"
+      risk_scope: source-or-external
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write mcp test exception scenario: %v", err)
+	}
+	return path
+}
+
+// allowMCPRoots appends the gateway's repository allowlist to the harness's
+// global config. It is written after setup because the allowed roots are
+// worktree paths that do not exist until the test creates them, and written
+// once because a second mcp: block would be a duplicate YAML key.
+func allowMCPRoots(t *testing.T, h *Harness, roots ...string) {
+	t.Helper()
+	path := filepath.Join(h.NMHome, "config.yaml")
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read global config: %v", err)
+	}
+	block := "mcp:\n  allowed_repo_roots:\n"
+	for _, root := range roots {
+		block += fmt.Sprintf("    - %s\n", root)
+	}
+	if err := os.WriteFile(path, []byte(string(existing)+block), 0o644); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+}
+
+// startMCPSession launches the real `no-mistakes mcp serve --stdio` binary as a
+// subprocess and speaks MCP to it, which is what an agent surface does.
+func startMCPSession(t *testing.T, h *Harness, dir string) *sdk.ClientSession {
+	t.Helper()
+	cmd := exec.Command(h.NMBin, "mcp", "serve", "--stdio")
+	cmd.Dir = dir
+	cmd.Env = os.Environ()
+	cmd.Stderr = os.Stderr
+	client := sdk.NewClient(&sdk.Implementation{Name: "e2e-agent-surface", Version: "test"}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	session, err := client.Connect(ctx, &sdk.CommandTransport{Command: cmd}, nil)
+	if err != nil {
+		t.Fatalf("connect to mcp gateway: %v", err)
+	}
+	return session
+}
+
+// mcpCall issues one tool call and decodes the normalized receipt.
+func mcpCall(t *testing.T, session *sdk.ClientSession, name string, args map[string]any) map[string]any {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatalf("%s returned no content", name)
+	}
+	text, ok := res.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("%s content = %T, want text", name, res.Content[0])
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal([]byte(text.Text), &receipt); err != nil {
+		t.Fatalf("%s content is not a JSON receipt: %v\n%s", name, err, text.Text)
+	}
+	t.Logf("%s receipt: %s", name, text.Text)
+	return receipt
+}
+
+// TestMCPGatewayJourney drives a complete no-mistakes delivery through the MCP
+// gateway the way an external agent surface would: discover the tools, inspect
+// status, start a run, receive a gate, be refused an ask-user decision, survive
+// the gateway process exiting mid-run, then finish with an explicit human
+// decision and receive a receipt carrying the created PR URL and full head SHA.
+//
+// No MCP tool writes to the forge: publication happens inside no-mistakes.
+func TestMCPGatewayJourney(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: mcpScenario(t)})
+	ctx := context.Background()
+	branch := "feature/mcp-gateway"
+
+	parentURL := "https://github.com/example/no-mistakes.git"
+	forkURL := "https://github.com/example-fork/no-mistakes.git"
+	forkDir := filepath.Join(filepath.Dir(h.UpstreamDir), "fork.git")
+	if err := os.MkdirAll(forkDir, 0o755); err != nil {
+		t.Fatalf("mkdir fork: %v", err)
+	}
+	if out, err := h.runGit(ctx, forkDir, "init", "--bare", "--initial-branch=main"); err != nil {
+		t.Fatalf("init fork: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "push", forkDir, "main"); err != nil {
+		t.Fatalf("seed fork main: %v\n%s", err, out)
+	}
+	configureGitURLRewrite(t, h, parentURL, h.UpstreamDir)
+	configureGitURLRewrite(t, h, forkURL, forkDir)
+	if out, err := h.runGit(ctx, h.WorkDir, "remote", "set-url", "origin", parentURL); err != nil {
+		t.Fatalf("set GitHub origin: %v\n%s", err, out)
+	}
+	t.Setenv("FAKEAGENT_GH_MODE", "fork-pr")
+	t.Setenv("FAKEAGENT_GH_LOG", filepath.Join(filepath.Dir(h.AgentLog), "gh-mcp-gateway.log"))
+	t.Setenv("FAKEAGENT_GH_PARENT", "example/no-mistakes")
+
+	if out, err := h.Run("init", "--fork-url", forkURL); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	head := h.CommitChange(branch, "feature.txt", "gateway\n", "add gateway feature")
+	worktree := h.AddWorktree(branch)
+	// The working clone sits on the default branch, and is allowlisted so the
+	// gateway's refusal to validate it is a branch decision, not a path one.
+	allowMCPRoots(t, h, filepath.Dir(worktree), filepath.Dir(h.WorkDir))
+
+	session := startMCPSession(t, h, h.WorkDir)
+	defer session.Close()
+
+	// Discovery: exactly the v1 tools, and nothing that writes to a forge.
+	list, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	tools := map[string]bool{}
+	for _, tool := range list.Tools {
+		tools[tool.Name] = true
+	}
+	for _, want := range []string{"nomistakes_status", "nomistakes_run", "nomistakes_respond", "nomistakes_logs", "nomistakes_sync", "nomistakes_doctor"} {
+		if !tools[want] {
+			t.Fatalf("missing tool %s; have %v", want, tools)
+		}
+	}
+	if len(tools) != 6 {
+		t.Fatalf("tools = %v, want exactly the six v1 tools", tools)
+	}
+
+	// A repository outside the configured roots is refused, by path, before
+	// anything happens.
+	outside := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.runGit(ctx, outside, "init"); err != nil {
+		t.Fatalf("init unrelated repo: %v\n%s", err, out)
+	}
+	refused := mcpCall(t, session, "nomistakes_doctor", map[string]any{"repo_path": outside})
+	if refused["ok"] != false {
+		t.Fatalf("a repository outside every allowed root must be refused: %#v", refused)
+	}
+	if errObj, _ := refused["error"].(map[string]any); errObj == nil || errObj["code"] != "repo_not_allowed" {
+		t.Fatalf("refusal = %#v", refused)
+	}
+
+	doctor := mcpCall(t, session, "nomistakes_doctor", map[string]any{"repo_path": worktree})
+	if doctor["ok"] != true {
+		t.Fatalf("doctor: %#v", doctor)
+	}
+	if data, _ := doctor["data"].(map[string]any); data == nil || data["repo_initialized"] != true {
+		t.Fatalf("doctor data: %#v", doctor["data"])
+	}
+
+	idle := mcpCall(t, session, "nomistakes_status", map[string]any{"repo_path": worktree})
+	if idle["state"] != "idle" {
+		t.Fatalf("status before any run = %#v", idle)
+	}
+
+	// The gateway cannot be used to validate - and therefore publish - the
+	// default branch. That refusal is AXI's own pre-flight, surfaced typed.
+	defaultBranch := startMCPSession(t, h, h.WorkDir)
+	onMain := mcpCall(t, defaultBranch, "nomistakes_run", map[string]any{
+		"repo_path": h.WorkDir, "intent": mcpIntent, "wait_seconds": 60,
+	})
+	defaultBranch.Close()
+	if onMain["ok"] != false {
+		t.Fatalf("the gateway validated the default branch: %#v", onMain)
+	}
+	if errObj, _ := onMain["error"].(map[string]any); errObj == nil || errObj["code"] != "default_branch_refused" {
+		t.Fatalf("default-branch refusal = %#v", onMain)
+	}
+
+	gate := mcpCall(t, session, "nomistakes_run", map[string]any{
+		"repo_path": worktree, "intent": mcpIntent, "wait_seconds": 150,
+	})
+	if gate["state"] != "awaiting_decision" {
+		t.Fatalf("run did not park at a gate: %#v", gate)
+	}
+	if gate["requires_user_decision"] != true {
+		t.Fatalf("an ask-user gate must require an external decision: %#v", gate)
+	}
+	runID, _ := gate["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("gate receipt carries no run id: %#v", gate)
+	}
+	findings, _ := gate["findings"].([]any)
+	if len(findings) != 1 || findings[0].(map[string]any)["action"] != types.ActionAskUser {
+		t.Fatalf("gate findings = %#v", gate["findings"])
+	}
+
+	// The intent reached the pipeline verbatim rather than being inferred.
+	assertIntentReachedAgent(t, h, mcpIntent)
+
+	// The gateway refuses to answer what the pipeline referred to a human, and
+	// the run is left exactly where it was.
+	denied := mcpCall(t, session, "nomistakes_respond", map[string]any{
+		"repo_path": worktree, "action": "approve",
+	})
+	if denied["ok"] != false {
+		t.Fatalf("an ask-user gate was progressed without a decision: %#v", denied)
+	}
+	if errObj, _ := denied["error"].(map[string]any); errObj == nil || errObj["code"] != "user_decision_required" {
+		t.Fatalf("refusal = %#v", denied)
+	}
+	still := h.RunInfo(runID)
+	if still == nil || still.Status != types.RunRunning {
+		t.Fatalf("the refused response changed the run: %#v", still)
+	}
+
+	// Logs are readable while parked.
+	logs := mcpCall(t, session, "nomistakes_logs", map[string]any{
+		"repo_path": worktree, "step": "review",
+	})
+	if logs["ok"] != true {
+		t.Fatalf("logs: %#v", logs)
+	}
+
+	// The gateway holds no run state: stopping it leaves the run parked and
+	// alive, and a fresh gateway picks it straight back up.
+	if err := session.Close(); err != nil {
+		t.Fatalf("close gateway session: %v", err)
+	}
+	survived := h.RunInfo(runID)
+	if survived == nil || survived.Status != types.RunRunning {
+		t.Fatalf("stopping the gateway ended the run: %#v", survived)
+	}
+
+	resumed := startMCPSession(t, h, h.WorkDir)
+	defer resumed.Close()
+	reattached := mcpCall(t, resumed, "nomistakes_status", map[string]any{"repo_path": worktree})
+	if reattached["run_id"] != runID || reattached["state"] != "awaiting_decision" {
+		t.Fatalf("a fresh gateway did not find the parked run: %#v", reattached)
+	}
+
+	// With the decision a human actually made, the run finishes.
+	done := mcpCall(t, resumed, "nomistakes_respond", map[string]any{
+		"repo_path": worktree, "action": "approve",
+		"user_decision": "The maintainer reviewed mcp-1 and accepted the current behaviour.",
+		"wait_seconds":  180,
+	})
+	if done["ok"] != true {
+		t.Fatalf("respond with a decision: %#v", done)
+	}
+
+	completed := h.WaitForRun(branch, 180*time.Second)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, error = %v", completed.Status, deref(completed.Error))
+	}
+	if completed.PRURL == nil || !strings.HasPrefix(*completed.PRURL, "https://github.com/example/no-mistakes/pull/") {
+		t.Fatalf("no-mistakes did not create a PR: %v", completed.PRURL)
+	}
+
+	final := mcpCall(t, resumed, "nomistakes_status", map[string]any{"repo_path": worktree, "run_id": runID})
+	if final["pr_url"] != *completed.PRURL {
+		t.Fatalf("receipt pr_url = %v, want %q", final["pr_url"], *completed.PRURL)
+	}
+	gotHead, _ := final["head_sha"].(string)
+	if gotHead != completed.HeadSHA {
+		t.Fatalf("receipt head_sha = %q, want the run head %q", gotHead, completed.HeadSHA)
+	}
+	if len(gotHead) != 40 {
+		t.Fatalf("receipt head_sha %q is abbreviated; a machine receipt must carry the full commit", gotHead)
+	}
+	if gotHead == head {
+		t.Logf("head unchanged by the pipeline: %s", gotHead)
+	}
+	if state, _ := final["state"].(string); !strings.HasPrefix(state, "passed") {
+		t.Fatalf("final state = %q, want a passed outcome", state)
+	}
+
+	// Synchronization against the real branch-sync service: reading always
+	// works, and a mutation happens only when no-mistakes' own next action
+	// authorizes it.
+	inspected := mcpCall(t, resumed, "nomistakes_sync", map[string]any{"repo_path": worktree})
+	if inspected["ok"] != true {
+		t.Fatalf("sync inspection: %#v", inspected)
+	}
+	syncData, _ := inspected["data"].(map[string]any)
+	nextAction, _ := syncData["next_action"].(map[string]any)
+	if nextAction == nil {
+		t.Fatalf("sync reported no next_action field: %#v", inspected)
+	}
+	// An empty code is legitimate: a merged, closed, or synchronized branch has
+	// nothing to do, and that must refuse a mutation like any other code.
+	code, _ := nextAction["code"].(string)
+	headBefore, err := h.runGit(ctx, worktree, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("read worktree head: %v\n%s", err, headBefore)
+	}
+
+	applied := mcpCall(t, resumed, "nomistakes_sync", map[string]any{"repo_path": worktree, "apply": true})
+	if code == "sync" {
+		if applied["ok"] != true {
+			t.Fatalf("an authorized sync was refused: %#v", applied)
+		}
+	} else {
+		if applied["ok"] != false {
+			t.Fatalf("sync ran with next action %q, which does not authorize it: %#v", code, applied)
+		}
+		if errObj, _ := applied["error"].(map[string]any); errObj == nil || errObj["code"] != "sync_not_authorized" {
+			t.Fatalf("sync refusal = %#v", applied)
+		}
+		if data, _ := applied["data"].(map[string]any); data == nil || data["changed"] != false {
+			t.Fatalf("a refused sync reported a change: %#v", applied)
+		}
+		if headAfter, err := h.runGit(ctx, worktree, "rev-parse", "HEAD"); err != nil || string(headAfter) != string(headBefore) {
+			t.Fatalf("a refused sync moved HEAD from %s to %s (%v)", headBefore, headAfter, err)
+		}
+	}
+
+	// Recovery is a different mutation and is never reachable by asserting it
+	// alongside a plain synchronization.
+	contradictory := mcpCall(t, resumed, "nomistakes_sync", map[string]any{
+		"repo_path": worktree, "apply": true, "recover": true,
+	})
+	if contradictory["ok"] != false {
+		t.Fatalf("apply and recover were accepted together: %#v", contradictory)
+	}
+
+	if dir := os.Getenv("NM_EVIDENCE_DIR"); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+		journeyEvidence := map[string]any{
+			"scenario":                     "Full end-to-end delivery journey through MCP gateway with live daemon, ask-user gate, and guarded sync",
+			"doctor_outside_roots":         refused,
+			"doctor_inside_roots":          doctor,
+			"status_before_run":            idle,
+			"run_default_branch_refused":   onMain,
+			"run_parked_at_ask_user_gate":  gate,
+			"unauthorized_respond_refused": denied,
+			"logs_retrieval":               logs,
+			"status_reattached_after_exit": reattached,
+			"authorized_respond_success":   done,
+			"final_status_completed":       final,
+			"sync_inspected":               inspected,
+			"sync_applied_or_refused":      applied,
+			"sync_contradictory_refused":   contradictory,
+		}
+		if data, err := json.MarshalIndent(journeyEvidence, "", "  "); err == nil {
+			_ = os.WriteFile(filepath.Join(dir, "scenario-e2e-delivery-journey.json"), data, 0o644)
+		}
+	}
+}
+
+// TestMCPGatewayTestApprovalException proves the MCP approval reason is
+// consumed by the real daemon and survives a fresh status read, rather than
+// merely being echoed by a forwarding mock.
+func TestMCPGatewayTestApprovalException(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: mcpTestExceptionScenario(t)})
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	branch := "feature/mcp-test-exception"
+	h.CommitChange(branch, "feature.txt", "gateway test exception\n", "add gateway test exception")
+	worktree := h.AddWorktree(branch)
+	allowMCPRoots(t, h, filepath.Dir(worktree))
+
+	session := startMCPSession(t, h, h.WorkDir)
+	defer session.Close()
+	run := mcpCall(t, session, "nomistakes_run", map[string]any{
+		"repo_path": worktree, "intent": mcpIntent, "skip": []any{"pr", "ci"}, "wait_seconds": 180,
+	})
+	if run["state"] != "awaiting_decision" || run["step"] != string(types.StepTest) {
+		t.Fatalf("run did not park at Test approval: %#v", run)
+	}
+	runID, _ := run["run_id"].(string)
+	reason := "The maintainer accepted the inconclusive live result for this test."
+	done := mcpCall(t, session, "nomistakes_respond", map[string]any{
+		"repo_path": worktree, "run_id": runID, "action": "approve", "user_decision": reason, "wait_seconds": 180,
+	})
+	if done["ok"] != true || done["state"] != "passed-with-override" {
+		t.Fatalf("approval did not produce passed-with-override: %#v", done)
+	}
+	status := mcpCall(t, session, "nomistakes_status", map[string]any{"repo_path": worktree, "run_id": runID})
+	if status["state"] != "passed-with-override" || !strings.Contains(fmt.Sprint(status["warnings"]), reason) {
+		t.Fatalf("durable status lost the Test approval reason: %#v", status)
+	}
+
+	logPath := filepath.Join(h.NMHome, "logs", runID, "test.log")
+	giant := strings.Repeat("x", 128*1024) + "\n\n\n"
+	if err := os.WriteFile(logPath, []byte(giant), 0o644); err != nil {
+		t.Fatalf("write giant fixture log: %v", err)
+	}
+	logs := mcpCall(t, session, "nomistakes_logs", map[string]any{
+		"repo_path": worktree, "run_id": runID, "step": "test", "tail_lines": 500,
+	})
+	data, _ := logs["data"].(map[string]any)
+	lines, _ := data["lines"].([]any)
+	if data["total_lines"] != float64(1) || data["truncated"] != true || len(lines) != 1 || len(fmt.Sprint(lines[0])) > 64*1024 {
+		t.Fatalf("giant log receipt = %#v, want one bounded truncated line", data)
+	}
+	if err := os.WriteFile(logPath, []byte("\n\n\n"), 0o644); err != nil {
+		t.Fatalf("write blank fixture log: %v", err)
+	}
+	blank := mcpCall(t, session, "nomistakes_logs", map[string]any{
+		"repo_path": worktree, "run_id": runID, "step": "test", "tail_lines": 500,
+	})
+	blankData, _ := blank["data"].(map[string]any)
+	if blankData["total_lines"] != float64(0) || blankData["truncated"] != false {
+		t.Fatalf("blank log receipt = %#v, want zero lines", blankData)
+	}
+
+	database, err := db.OpenReadOnly(filepath.Join(h.NMHome, "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	steps, err := database.GetStepsByRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepTest {
+			if step.ApprovalReason == nil || *step.ApprovalReason != reason {
+				t.Fatalf("persisted Test approval reason = %v, want %q", step.ApprovalReason, reason)
+			}
+			return
+		}
+	}
+	t.Fatal("persisted Test step not found")
+}
+
+// assertIntentReachedAgent proves the caller's own intent text was handed to
+// the pipeline agent rather than inferred.
+func assertIntentReachedAgent(t *testing.T, h *Harness, intent string) {
+	t.Helper()
+	for _, inv := range h.AgentInvocations() {
+		if strings.Contains(inv.Prompt, intent) {
+			return
+		}
+	}
+	t.Fatalf("intent %q never reached a pipeline agent prompt", intent)
+}
