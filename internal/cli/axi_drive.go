@@ -515,9 +515,11 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	}
 	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
 	if err != nil {
-		// An active run can still be found below. Without a baseline, however,
-		// a matching terminal run may predate this push, so do not attach to it.
-		priorRunIDs = nil
+		// Without a baseline, a fast-terminal run this push creates looks like
+		// an older one, so the poll would miss it and the fallback would start
+		// a second run for the same head. Refuse before pushing: a baseline
+		// taken after the push could already include the new run.
+		return "", fmt.Errorf("get prior runs for %q: %w", branch, err)
 	}
 	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 		return "", &branchOwnershipError{state: *state}
@@ -532,7 +534,14 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 		}
 	}
 
-	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout); run != nil {
+	// Only the wait window expiring (nil, nil) means no run appeared. A failed
+	// or cancelled poll proves nothing, and a rerun would duplicate the run
+	// this push may have created.
+	run, waitErr := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout)
+	if waitErr != nil {
+		return "", fmt.Errorf("wait for triggered run: %w", waitErr)
+	}
+	if run != nil {
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {
