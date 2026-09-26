@@ -88,6 +88,11 @@ external agent's behalf, so a pushed branch has no way to widen it. See
 | `nomistakes_sync` | write (guarded) | Reads branch synchronization; applies it or returns custody only when no-mistakes' own next action authorizes exactly that. |
 | `nomistakes_doctor` | read-only | Whether the repository is initialized, whether the daemon is running, which agents this machine can launch. |
 
+`nomistakes_logs` accepts the nine core step names and valid repository-declared
+gate names in the form `gate.<anchor>.<name>`, such as
+`gate.test.mutation-budget`. Unknown or malformed gate names are rejected; the
+gateway does not turn them into filesystem paths.
+
 There is deliberately no merge tool, no push tool, and no abort tool. Merging is
 a human decision; publishing happens inside no-mistakes; aborting is a
 between-runs action that is easy to misuse mid-run. `nomistakes_sync` is guarded:

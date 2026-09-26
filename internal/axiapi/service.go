@@ -721,6 +721,9 @@ func readLogTail(ctx context.Context, file *os.File, tailLines int) ([]string, i
 }
 
 func validStep(step types.StepName) bool {
+	if step.IsCustomGate() {
+		return true
+	}
 	for _, known := range types.AllSteps() {
 		if step == known {
 			return true

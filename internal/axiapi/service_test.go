@@ -388,6 +388,41 @@ func TestLogsReturnsBoundedTail(t *testing.T) {
 	}
 }
 
+func TestLogsReadsCustomGateAndRejectsMalformedGateNames(t *testing.T) {
+	f := newFixture(t)
+	head := gitRun(t, f.repoPath, "rev-parse", "HEAD")
+	run, err := f.db.InsertRun(f.repo.ID, "feature/x", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := f.paths.RunLogDir(run.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	step := types.CustomGateStepName(types.StepTest, "mutation-budget")
+	if err := os.WriteFile(filepath.Join(dir, string(step)+".log"), []byte("gate output\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logs, err := f.svc.Logs(context.Background(), LogsRequest{RepoPath: f.repoPath, Step: string(step)})
+	if err != nil {
+		t.Fatalf("Logs custom gate: %v", err)
+	}
+	if logs.TotalLines != 1 || len(logs.Lines) != 1 || logs.Lines[0] != "gate output" {
+		t.Fatalf("custom gate logs = %+v, want one owned log line", logs)
+	}
+
+	for _, malformed := range []string{
+		"gate.test.a/b",
+		"gate.test.../../../etc/passwd",
+		"gate.nope.mutation-budget",
+	} {
+		if _, err := f.svc.Logs(context.Background(), LogsRequest{RepoPath: f.repoPath, Step: malformed}); err == nil {
+			t.Errorf("Logs(%q) succeeded, want malformed gate rejection", malformed)
+		}
+	}
+}
+
 func TestLogsRejectsUnknownStep(t *testing.T) {
 	f := newFixture(t)
 	if _, err := f.svc.Logs(context.Background(), LogsRequest{RepoPath: f.repoPath, Step: "nonsense"}); err == nil {
