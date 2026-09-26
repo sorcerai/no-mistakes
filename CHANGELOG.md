@@ -1,5 +1,67 @@
 # Changelog
 
+## [1.70.0](https://github.com/sorcerai/no-mistakes/compare/v1.69.0...v1.70.0) (2026-09-26)
+
+
+### Features
+
+* **agent:** configure independent reviewer and fixer harness profiles ([#1016](https://github.com/sorcerai/no-mistakes/issues/1016)) ([94afe33](https://github.com/sorcerai/no-mistakes/commit/94afe335fa0060bccc562cd0512c2c940741d95b))
+* **agent:** disable compact-adviser in every pipeline agent subprocess ([#1115](https://github.com/sorcerai/no-mistakes/issues/1115)) ([4b79b6e](https://github.com/sorcerai/no-mistakes/commit/4b79b6ef119a8e69d6c46c609dd6959f2efc9c06))
+* **axiapi:** add the typed AXI service boundary ([c28e68c](https://github.com/sorcerai/no-mistakes/commit/c28e68ce225ec0ec66030bb47e6bff4ff36f7370))
+* **config:** add branch capture replacements ([#1077](https://github.com/sorcerai/no-mistakes/issues/1077)) ([2707071](https://github.com/sorcerai/no-mistakes/commit/270707132de94f2dcffb9faab54ad1d197538234))
+* **config:** add ticket-aware commit and PR titles ([#1020](https://github.com/sorcerai/no-mistakes/issues/1020)) ([9cf26b0](https://github.com/sorcerai/no-mistakes/commit/9cf26b0b96cd1f35dc9070c8736e7c803adb21a6))
+* **daemon:** pin Pi model and reasoning effort per run ([#1072](https://github.com/sorcerai/no-mistakes/issues/1072)) ([71cd911](https://github.com/sorcerai/no-mistakes/commit/71cd9110543eeac67fd76180f2bdabd355395ec2))
+* **eval:** auto-ingest fixed CI misses ([#1012](https://github.com/sorcerai/no-mistakes/issues/1012)) ([bace158](https://github.com/sorcerai/no-mistakes/commit/bace15861522b7613944f68dcf6574d6a202e544))
+* integrate upstream safeguards and scoped Codex evidence ([dcf3f99](https://github.com/sorcerai/no-mistakes/commit/dcf3f99025577798ed745ec9b05c8c53e3780dc0))
+* **mcp:** add normalized receipts and the v1 service layer ([b49bb18](https://github.com/sorcerai/no-mistakes/commit/b49bb183f9a2ea6b119f3a23b5935a161ab7a7a1))
+* **mcp:** add repository authorization for the gateway ([a7d7885](https://github.com/sorcerai/no-mistakes/commit/a7d788581ce53ca797004132875006133ef92c27))
+* **mcp:** add secure no-mistakes gateway ([c04fba1](https://github.com/sorcerai/no-mistakes/commit/c04fba1bf57958a8a0c3aafa898c489165e124a3))
+* **mcp:** serve the v1 tool surface over stdio ([c8b94af](https://github.com/sorcerai/no-mistakes/commit/c8b94af5041131e0a16bb98f285f7e9cee293141))
+* **pipeline:** add opt-in TypeSafe Jev context pre-brief to review turns ([#1120](https://github.com/sorcerai/no-mistakes/issues/1120)) ([9b697a7](https://github.com/sorcerai/no-mistakes/commit/9b697a7bc9448a3d158eb6e8a65c20628535ce08))
+* **pipeline:** add opt-out for generated PR intent publication ([#1018](https://github.com/sorcerai/no-mistakes/issues/1018)) ([2696771](https://github.com/sorcerai/no-mistakes/commit/2696771d8fcb772708164b5e2e381b18b69b321b))
+* **pipeline:** add repository command gates ([#1030](https://github.com/sorcerai/no-mistakes/issues/1030)) ([74143ae](https://github.com/sorcerai/no-mistakes/commit/74143aee1fa6f316491c9d5c105993198c895b8e))
+* **pipeline:** integrate a moved base by merging behind rebase.strategy ([#1081](https://github.com/sorcerai/no-mistakes/issues/1081)) ([ae2e99a](https://github.com/sorcerai/no-mistakes/commit/ae2e99a8b250eb90e66211ae98508f1b21442293))
+* **pipeline:** prepare dependencies once per run ([#937](https://github.com/sorcerai/no-mistakes/issues/937)) ([4603016](https://github.com/sorcerai/no-mistakes/commit/4603016d04f78f360235704d73b01e2a6eaf6cac))
+* **pipeline:** support repository PR templates with author-preserving updates ([#1044](https://github.com/sorcerai/no-mistakes/issues/1044)) ([36b9e2e](https://github.com/sorcerai/no-mistakes/commit/36b9e2e98a0fb97aa896fc9555dbffd3c389bddf))
+* **pipeline:** unify CI failures with findings loop ([#1009](https://github.com/sorcerai/no-mistakes/issues/1009)) ([9a464c2](https://github.com/sorcerai/no-mistakes/commit/9a464c26fca7962fdd318502358cfa6cb0e1de1c))
+
+
+### Bug Fixes
+
+* **agent:** block unsafe durable-session replay ([7abdef9](https://github.com/sorcerai/no-mistakes/commit/7abdef9758c2e1370276b3b990e2f95d7fbfbef7))
+* **agent:** bound pipeline agent host filesystem searches ([#1096](https://github.com/sorcerai/no-mistakes/issues/1096)) ([3eb3c25](https://github.com/sorcerai/no-mistakes/commit/3eb3c25e51a0b19547d56d2b6958c2d521da96df))
+* **agent:** prevent unsafe Codex replay ([cc7686d](https://github.com/sorcerai/no-mistakes/commit/cc7686d85e95ba3dec91c5557424ab10bade8328))
+* **agent:** record honest token usage on failed and cancelled invocations ([#1059](https://github.com/sorcerai/no-mistakes/issues/1059)) ([fb664f6](https://github.com/sorcerai/no-mistakes/commit/fb664f6eb58e0b81f34bb570f95a91914fc0c9b2))
+* **agent:** refuse indeterminate and cancelled session replay ([8fe2431](https://github.com/sorcerai/no-mistakes/commit/8fe243171076135b5566f6e00616466071846494))
+* **agent:** tolerate provider residue and split objects in structured output ([#1050](https://github.com/sorcerai/no-mistakes/issues/1050)) ([a12b0d5](https://github.com/sorcerai/no-mistakes/commit/a12b0d5283f9469789f297cb1d6acff53c469a36))
+* **axiapi:** allow reading custom-gate logs through MCP ([#5](https://github.com/sorcerai/no-mistakes/issues/5)) ([bba83cb](https://github.com/sorcerai/no-mistakes/commit/bba83cb84c2889b3e38a0c3934768bdb18445664))
+* **axiapi:** read the daemon-start seam before its goroutine outlives the caller ([42c6c08](https://github.com/sorcerai/no-mistakes/commit/42c6c0895147f2afd50b87e6d133c1ca132977ad))
+* **branchsync:** recover reviewed equal-tree rewrites ([#1037](https://github.com/sorcerai/no-mistakes/issues/1037)) ([947c64c](https://github.com/sorcerai/no-mistakes/commit/947c64c7046d47a924cdfb374887202edf560fc8))
+* **cli:** bypass pre-push hooks for gate triggers ([#909](https://github.com/sorcerai/no-mistakes/issues/909)) ([6840d18](https://github.com/sorcerai/no-mistakes/commit/6840d18689ad84fc570b7603abb80b45a643b06c))
+* **cli:** do not rerun after a failed triggered-run poll ([e37bea9](https://github.com/sorcerai/no-mistakes/commit/e37bea9192bd3980dab2ee4915c338fab3650e8d))
+* **cli:** keep the push error and point a stranded caller at the gate ([0335175](https://github.com/sorcerai/no-mistakes/commit/0335175ae694094c7a081577ee0a29faf86acb32))
+* **cli:** prevent duplicate reruns after trigger errors ([#2](https://github.com/sorcerai/no-mistakes/issues/2)) ([367ec36](https://github.com/sorcerai/no-mistakes/commit/367ec36e9ca88d88f4bf3d173f2d8439f2b6b2f5))
+* **cli:** refuse a baseline-less push at both trigger baselines ([bef8e9e](https://github.com/sorcerai/no-mistakes/commit/bef8e9e34ef134115ab98d86e13865516ec3b88a))
+* **cli:** show elapsed time for the active review round ([#1001](https://github.com/sorcerai/no-mistakes/issues/1001)) ([2b98e45](https://github.com/sorcerai/no-mistakes/commit/2b98e458251207404b413ec65cbf205a1cb7ff57))
+* **deps:** bump golang.org/x/text to v0.41.0 for CVE-2026-56852 ([#1073](https://github.com/sorcerai/no-mistakes/issues/1073)) ([5173f42](https://github.com/sorcerai/no-mistakes/commit/5173f42a9ef958f44476f7d7aac1d95815681fc5)), closes [#903](https://github.com/sorcerai/no-mistakes/issues/903)
+* discover existing Azure DevOps PRs without repository webUrl ([#1076](https://github.com/sorcerai/no-mistakes/issues/1076)) ([0eb367c](https://github.com/sorcerai/no-mistakes/commit/0eb367ce8ec1b6f9f23bf5a42f5b7a23d8339c31)), closes [#1042](https://github.com/sorcerai/no-mistakes/issues/1042)
+* **mcp:** enforce the ask-user refusal against the live gate ([973413e](https://github.com/sorcerai/no-mistakes/commit/973413e876bca0a812d6f217956ac8e9005dd718))
+* **pipeline:** ask before proceeding without a live-testable surface ([#1005](https://github.com/sorcerai/no-mistakes/issues/1005)) ([8c274f3](https://github.com/sorcerai/no-mistakes/commit/8c274f37ed2257bb76dea341354a3cc22081ca83))
+* **pipeline:** attest approved test command failures ([#1070](https://github.com/sorcerai/no-mistakes/issues/1070)) ([b3b818e](https://github.com/sorcerai/no-mistakes/commit/b3b818e9e8f040c8257a4fbcd8adcbb0fa568bde))
+* **pipeline:** close defect classes in review fix rounds ([#1123](https://github.com/sorcerai/no-mistakes/issues/1123)) ([bfc098c](https://github.com/sorcerai/no-mistakes/commit/bfc098c6f1d7e37a9db2332129cbe43e64af3937))
+* **pipeline:** distinguish intended local-main deliveries ([#1003](https://github.com/sorcerai/no-mistakes/issues/1003)) ([33327b7](https://github.com/sorcerai/no-mistakes/commit/33327b794639a230c829a0a9ac5398dc22c3e958))
+* **pipeline:** fail closed on PR attestation refresh ([#910](https://github.com/sorcerai/no-mistakes/issues/910)) ([b48fa6d](https://github.com/sorcerai/no-mistakes/commit/b48fa6da49baba46a764ea166371ca4818380436))
+* **pipeline:** handle empty-index repairs and reconcile stale private mirrors ([#1046](https://github.com/sorcerai/no-mistakes/issues/1046)) ([e94c7a0](https://github.com/sorcerai/no-mistakes/commit/e94c7a069051a2d4fad1241c341205c42963d937))
+* **pipeline:** keep review findings outstanding until verified ([#1095](https://github.com/sorcerai/no-mistakes/issues/1095)) ([8f683b5](https://github.com/sorcerai/no-mistakes/commit/8f683b5313fe93b70b4d76f52f37dfd69f187197))
+* **pipeline:** park Test agent budget cuts for a decision instead of failing the run ([#1114](https://github.com/sorcerai/no-mistakes/issues/1114)) ([664424f](https://github.com/sorcerai/no-mistakes/commit/664424f9ee57a1859691f1f9329fd449866c0af2))
+* **pipeline:** prevent fake TUI live-validation passes ([#1057](https://github.com/sorcerai/no-mistakes/issues/1057)) ([bff827f](https://github.com/sorcerai/no-mistakes/commit/bff827faa6e36d084f081e482e3d0e628d6aca88))
+* **pipeline:** report approved Test exceptions as passed-with-override ([#1100](https://github.com/sorcerai/no-mistakes/issues/1100)) ([2bcb710](https://github.com/sorcerai/no-mistakes/commit/2bcb710112036952dc794fdebf575ea2626839dc))
+* **pipeline:** rerun a fresh review when the reviewer's output fails schema validation ([#1051](https://github.com/sorcerai/no-mistakes/issues/1051)) ([1a119a3](https://github.com/sorcerai/no-mistakes/commit/1a119a3b2747b515dfebbdc2f98a0d5a92edd727))
+* **pipeline:** retry invalid test analyzer findings ([#1014](https://github.com/sorcerai/no-mistakes/issues/1014)) ([42497f8](https://github.com/sorcerai/no-mistakes/commit/42497f8412214d8f37ed3d0ce807a6ea3692e8e0))
+* publish update channels after automated releases ([#1024](https://github.com/sorcerai/no-mistakes/issues/1024)) ([53ceb81](https://github.com/sorcerai/no-mistakes/commit/53ceb81ea6920e449684c2d0c275006e7ed99e8c))
+* **shellenv:** reliably resolve daemon login shell environment ([#1056](https://github.com/sorcerai/no-mistakes/issues/1056)) ([975ed5b](https://github.com/sorcerai/no-mistakes/commit/975ed5bfcbdb99f94c73a52f489c5db6ed59c02b))
+* **update:** fetch version metadata from release CDN ([#1007](https://github.com/sorcerai/no-mistakes/issues/1007)) ([2db4b7f](https://github.com/sorcerai/no-mistakes/commit/2db4b7f19224bde17018ebfcd38bbe56bd9486f4))
+
 ## [1.69.0](https://github.com/kunchenguid/no-mistakes/compare/v1.68.0...v1.69.0) (2026-09-07)
 
 
